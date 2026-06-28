@@ -145,8 +145,8 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // memory decay/salience, cross-encoder rerank, passage extraction, diversity cap (MMR).
   // The pipeline lives in ./retrieval/* - this is a thin wrapper that threads the
   // shared embedded state into the orchestrator.
-  async function searchWithGraph(query: string, userId: string, orgId: string, trace?: SearchTrace): Promise<RetrievalResponse> {
-    return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace)
+  async function searchWithGraph(query: string, userId: string, orgId: string, trace?: SearchTrace, limit?: number): Promise<RetrievalResponse> {
+    return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace, limit)
   }
 
   // Same retrieval, but also returns the pipeline TRACE (for the UI's explainability).

@@ -7,6 +7,14 @@ semantic versioning once it reaches 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **`get_context` incompleteness (was returning ~20% of relevant context).** Two causes:
+  (1) a **KGQA short-circuit** returned only the 1-few exact typed-graph facts and skipped the
+  ranked retrieval entirely; (2) the final cut was **`topk=6`**. Now `get_context` is
+  **additive** — the precise typed-graph answer is a highlight *on top of* the full ranked
+  recall (vector + BM25 + GraphRAG), default `topk` raised to 8, breadth queries ("everything
+  about X", "all/list …") auto-widen to 20, and a `limit` arg (≤50) is exposed and threaded
+  through `searchWithGraph`/`hybridSearch`. Regression: `test/mcp/get-context.test.ts`.
+  (For an exhaustive entity relationship map, `context_graph` remains the right tool.)
 - **Embedding dimension-mismatch crash.** Ingesting/querying a DB whose stored vectors were
   written by a different embedder (e.g. real bge-384 vs hashing-64) threw "expected 384, got
   64" on the `vec0` insert and crashed `context_ingest`. The store now self-heals: the vec

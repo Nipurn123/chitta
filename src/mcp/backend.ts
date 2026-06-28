@@ -42,7 +42,7 @@ export interface ContextBackend {
   embeddings: string
   /** Knowledge extraction mode - confirms whether the LLM is wired. */
   extraction: string
-  query(q: string): Promise<RetrievalResponse>
+  query(q: string, limit?: number): Promise<RetrievalResponse>
   /** KGQA: exact answer from the typed graph, or null to fall back to ranked. */
   ask?: (q: string) => Promise<ExactAnswer | null>
   ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
@@ -84,7 +84,7 @@ export function resolveBackend(): ContextBackend {
       embeddings: "central embedding service",
       extraction: "central ingestion pipeline",
       // Ingestion in the central tier is normally via connectors - not exposed here.
-      query: (q) => svc.retrieval.searchWithFilters({ queries: [q], userId, orgId, limit: 10 }),
+      query: (q, limit) => svc.retrieval.searchWithFilters({ queries: [q], userId, orgId, limit: limit ?? 10 }),
     }
   }
 
@@ -102,7 +102,7 @@ export function resolveBackend(): ContextBackend {
       : "caller-supplied typed triples (the calling model passes entities+relations to context_ingest); " +
         "deterministic fallback when none given",
     // reconcile() heals embedder/dim drift once before any vector op (ingest already does)
-    query: async (q) => (await ctx.reconcile(), ctx.searchWithGraph(q, ctx.userId, ctx.orgId)), // vector + ACL + GraphRAG
+    query: async (q, limit) => (await ctx.reconcile(), ctx.searchWithGraph(q, ctx.userId, ctx.orgId, undefined, limit)), // vector + ACL + GraphRAG
     ask: async (q) => (await ctx.reconcile(), ctx.ask(q, ctx.userId, ctx.orgId)), // KGQA: exact answer from the typed graph
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {

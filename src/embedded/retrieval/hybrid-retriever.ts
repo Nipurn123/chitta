@@ -37,9 +37,12 @@ export async function hybridSearch(
   userId: string,
   orgId: string,
   trace?: SearchTrace,
+  limit?: number,
 ): Promise<RetrievalResponse> {
   const { retrieval, store, graph, embeddings, reranker } = deps
-  const retrieveLimit = Number(process.env.CONTEXT_RETRIEVE_LIMIT ?? 20)
+  const topk = limit && limit > 0 ? limit : Number(process.env.CONTEXT_TOPK ?? 8)
+  // candidate pool scales with the requested topk so breadth queries aren't starved
+  const retrieveLimit = Math.max(Number(process.env.CONTEXT_RETRIEVE_LIMIT ?? 20), topk * 2)
   const accMap = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
   const accessibleVids = new Set(Object.keys(accMap))
 
@@ -61,7 +64,6 @@ export async function hybridSearch(
   const cfg = decayConfig()
   decayStage(store, merged, userId, cfg)
 
-  const topk = Number(process.env.CONTEXT_TOPK ?? 6)
   const ratio = Number(process.env.CONTEXT_RRF_RATIO ?? 0.3) // relative cutoff on fused score
   const initialCutoff = (merged[0]?.rrf ?? 0) * ratio
 
