@@ -8,6 +8,7 @@ import { SqliteStore } from "./sqlite-store"
 import { SqliteGraphProvider } from "./sqlite-graph-provider"
 import { SqliteVecService } from "./sqlite-vec-service"
 import { LocalHashEmbeddings } from "./local-embeddings"
+import { TransformersEmbeddings, AutoEmbeddings } from "./transformers-embeddings"
 import { Ingestor, type IngestDoc } from "./ingest"
 import { DeterministicExtractor, type KnowledgeExtractor } from "./extract"
 import { Authorizer } from "./authorizer"
@@ -45,11 +46,26 @@ export interface EmbeddedOptions {
 // public API.
 export type { SearchTrace } from "./retrieval/trace"
 
+// Default embedder selection (when the caller doesn't pass one). Controlled by
+// CONTEXT_EMBEDDINGS: "auto" (default) = real semantic embeddings when transformers.js
+// can load, else the offline keyword-hash fallback; "real"/"transformers" = force real;
+// "hash"/"local" = force the deterministic hashing embedder (used by the test suite via
+// bunfig preload, so tests never download a model). CONTEXT_EMBED_MODEL overrides the model.
+// NOTE: a given DB is tied to ONE embedder's vector space — don't switch embedders on an
+// existing DB (dims differ); reindex if you change modes.
+export function defaultEmbeddings(): EmbeddingProvider {
+  const mode = (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()
+  const model = process.env.CONTEXT_EMBED_MODEL || undefined
+  if (mode === "hash" || mode === "local") return new LocalHashEmbeddings()
+  if (mode === "real" || mode === "transformers") return new TransformersEmbeddings(model)
+  return new AutoEmbeddings(model)
+}
+
 export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   const store = new SqliteStore(opts.path ?? ":memory:")
   const graph = new SqliteGraphProvider(store)
   const vector = new SqliteVecService(store)
-  const embeddings = opts.embeddings ?? new LocalHashEmbeddings()
+  const embeddings = opts.embeddings ?? defaultEmbeddings()
   const extractor = opts.extractor ?? new DeterministicExtractor()
   const retrieval = new RetrievalService({
     graph,

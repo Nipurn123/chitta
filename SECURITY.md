@@ -59,12 +59,19 @@ zero-width, and control characters at write time **and** re-stripped at output. 
 
 ### Encryption at rest
 
-The local SQLite file is **not encrypted** today; the supported at-rest story is OS disk
-encryption (FileVault / LUKS / BitLocker), which is what comparable local-first memory
-tools rely on and which preserves full-text + vector search. Transparent whole-file
-encryption (via a libSQL driver with `encryptionKey`) is on the roadmap. In central mode,
-backend traffic should use TLS (`https://` URLs) with authenticated Arango/Qdrant/embedding
-endpoints.
+The local SQLite file is **not encrypted** today; the supported at-rest baseline is OS disk
+encryption (FileVault / LUKS / BitLocker) — what comparable local-first memory tools
+(mem0, Zep, Obsidian) rely on, and it preserves full-text + vector search.
+
+Transparent whole-file encryption was evaluated (libSQL's `encryptionKey`) and is **blocked
+upstream**: encryption + FTS5 work, but inserting vectors into a `vec0` table via bound
+parameters — Chitta's exact write path — fails (and panics) under libSQL, which would
+disable the ANN vector index. We'll revisit when that's fixed or another encrypted-SQLite
+build supports `vec0`. Optional field-level AES-256-GCM (encrypting `chunks.content` behind
+a `CONTEXT_DB_KEY`, at the cost of full-text search on that column) is available on request.
+
+In central mode, backend traffic should use TLS (`https://` URLs) with authenticated
+Arango/Qdrant/embedding endpoints.
 
 ### ACL integrity (keyspace isolation)
 

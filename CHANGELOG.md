@@ -31,6 +31,12 @@ semantic versioning once it reaches 1.0.
   principals").
 
 ### Added
+- **Real semantic embeddings by default.** `buildEmbeddedContext` now selects embeddings via
+  `CONTEXT_EMBEDDINGS` (default `auto`): real transformers.js embeddings (`bge-*`) when
+  loadable, automatic fallback to the offline hashing embedder otherwise; `real`/`hash` force
+  a mode (`CONTEXT_EMBED_MODEL` overrides the model). The test suite pins `hash` via a bunfig
+  preload so it stays fast and never downloads a model. A DB is tied to one embedder's vector
+  space — reindex if you switch modes.
 - **`chitta install` - universal connectors.** One command wires Chitta into 15 AI tools as
   an MCP server (everywhere) and a Skill (where supported): Claude Code, Claude Desktop,
   Cursor, VS Code/Copilot, Windsurf, Zed, Cline, Roo, Codex, Gemini CLI, opencode, Kiro, Amp,
