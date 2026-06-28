@@ -98,6 +98,35 @@ describe("living memory", () => {
     expect(mems.some((m) => m.memory.includes("reports to Dana"))).toBe(false) // dynamic expired
   })
 
+  test("backfill: a DB with typed graph but no memories (pre-memory-layer) self-heals on first use", async () => {
+    await ctx.authorizedIngest("alice", {
+      recordId: "r1", orgId: ORG, recordName: "facts", text: "Sarah works at Google DeepMind; Sarah cofounder with Marcus",
+      relations: [
+        { from: "Sarah", to: "Google DeepMind", type: "works_at" },
+        { from: "Sarah", to: "Marcus", type: "cofounder_with" },
+      ],
+    })
+    // simulate a DB created before the memory layer: edges exist, memories don't
+    ctx.store.db.exec("DELETE FROM memories")
+    expect(ctx.store.memories.counts().total).toBe(0)
+    // first profile/recall call must backfill memories from the typed graph automatically
+    const p = (await ctx.buildProfile("Sarah", "alice", ORG))!
+    expect(ctx.store.memories.counts().total).toBeGreaterThan(0) // self-healed
+    expect(p.recentFacts.some((f) => f.includes("works at Google DeepMind"))).toBe(true)
+  })
+
+  test("rebuildMemories backfills atomic memories from the existing typed graph", async () => {
+    await ctx.authorizedIngest("alice", {
+      recordId: "r1", orgId: ORG, recordName: "facts", text: "Acme acquired Globex",
+      relations: [{ from: "Acme", to: "Globex", type: "acquired" }],
+    })
+    ctx.store.db.exec("DELETE FROM memories")
+    const n = await ctx.rebuildMemories()
+    expect(n).toBeGreaterThan(0)
+    const mems = await ctx.recallMemories("Acme", "alice", ORG, 50)
+    expect(mems.some((m) => m.memory.includes("Acme acquired Globex"))).toBe(true)
+  })
+
   test("profile synthesis rolls up static + recent facts + related entities (ACL-scoped)", async () => {
     await ctx.authorizedIngest("alice", {
       recordId: "p1", orgId: ORG, recordName: "person", text: "Maya born in Pune; Maya works at Acme; Maya knows Rust",

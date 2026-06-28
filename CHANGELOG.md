@@ -6,6 +6,21 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-29
+
+### Fixed
+- **Atomic memories not populated for pre-existing data (`context_profile` looked empty /
+  redundant; `context_about` showed "0 current memories").** Memories were only consolidated
+  at ingest from newly-supplied triples, so a DB whose typed graph predated the memory layer
+  (or was built via the LLM extractor) had graph edges but **no atomic memories** - making
+  `context_profile` collapse to just "Connected to …" (less than `context_relate`). Added
+  `rebuildMemories()` which backfills the memory layer from every LIVE typed edge (resolving
+  entity labels + the asserting record's ACL anchor), wired into `context_rebuild`, plus a
+  one-time **self-heal**: `recallMemories` / `buildProfile` / `forgetMemories` auto-backfill
+  on first use when the memory table is empty but typed facts exist. Now `context_profile`
+  returns the promised permanent/recent fact synthesis on existing DBs with no manual step.
+  Regressions: `test/embedded/memory.test.ts` (self-heal + explicit rebuild).
+
 ## [0.1.5] - 2026-06-29
 
 ### Added

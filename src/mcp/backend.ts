@@ -64,8 +64,9 @@ export interface ContextBackend {
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
   /** Re-extract the knowledge graph over all records with the current extractor
-   *  (typed triples when an LLM is configured). Local mode only. */
-  rebuild?: () => Promise<{ records: number; entities: number }>
+   *  (typed triples when an LLM is configured), then rebuild the memory layer from the
+   *  resulting typed graph. Local mode only. */
+  rebuild?: () => Promise<{ records: number; entities: number; memories: number }>
   /** Graph-query surface (ACL-filtered traversal over the entity graph). Local only. */
   graphQuery?: {
     neighbors: (name: string, relation?: string) => Promise<unknown>
@@ -143,7 +144,11 @@ export function resolveBackend(): ContextBackend {
       const recordIds = [...new Set(Object.values(accessible))]
       return ctx.graph.getKnowledgeGraph(recordIds)
     },
-    rebuild: () => ctx.rebuildGraph(),
+    rebuild: async () => {
+      const g = await ctx.rebuildGraph()
+      const memories = await ctx.rebuildMemories()
+      return { ...g, memories }
+    },
     graphQuery: {
       neighbors: (name, relation) => ctx.graphQuery.neighbors(name, ctx.userId, ctx.orgId, relation),
       path: (a, b) => ctx.graphQuery.pathBetween(a, b, ctx.userId, ctx.orgId),

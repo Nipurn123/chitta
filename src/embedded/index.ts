@@ -19,6 +19,7 @@ import type { LlmExtractor } from "./llm-extractor"
 import type { EmbeddingProvider } from "../provider"
 import type { RetrievalResponse } from "../types"
 import { hybridSearch } from "./retrieval/hybrid-retriever"
+import { consolidateTriples } from "./memory/consolidate"
 import { cosine } from "./retrieval/passage"
 import type { SearchTrace } from "./retrieval/trace"
 
@@ -173,7 +174,30 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // ACL-scoped). recallMemories returns the CURRENT truth (latest version, not forgotten)
   // about whatever the query is asking, ranked by semantic similarity, gated by the same
   // accessible-record set the rest of retrieval uses (leak-proof by construction).
+  // Self-heal: if the memory table is empty but the typed graph already has facts (data
+  // ingested before the memory layer, or via the LLM extractor), backfill memories once -
+  // so context_profile / the get_context memory section work on existing DBs with no manual
+  // rebuild. Memoized; runs at most once per process and never blocks on failure.
+  let ensureMemoriesPromise: Promise<void> | null = null
+  function ensureMemories(): Promise<void> {
+    return (ensureMemoriesPromise ??= (async () => {
+      try {
+        if (store.memories.counts().total > 0) return
+        const hasTyped = store.db
+          .query(
+            `SELECT 1 FROM edges WHERE label NOT IN ('mentions','permissions','belongsTo','inheritPermissions','relates_to')
+             AND expired_at IS NULL LIMIT 1`,
+          )
+          .get()
+        if (hasTyped) await rebuildMemories()
+      } catch {
+        /* never block recall/profile on backfill */
+      }
+    })())
+  }
+
   async function recallMemories(query: string, userId: string, orgId: string, limit = 8): Promise<RecalledMemory[]> {
+    await ensureMemories() // backfill from the graph on first use for pre-existing DBs
     store.memories.sweep() // lazy TTL: retire any expired dynamic memories first
     const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
     const vids = [...new Set(Object.values(accessible))]
@@ -191,6 +215,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // the caller's accessible set only - you can never forget what you can't see. Soft
   // delete (history kept, excluded from recall). Returns the memory texts forgotten.
   async function forgetMemories(query: string, userId: string, orgId: string, reason = "forgotten by user"): Promise<string[]> {
+    await ensureMemories()
     const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
     const vids = [...new Set(Object.values(accessible))]
     const rows = store.memories.recall(vids)
@@ -228,6 +253,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // caller's accessible memories + graph). Returns null when nothing is known. This is
   // the Supermemory "user profile" surface, generalized to any permitted entity.
   async function buildProfile(subject: string, userId: string, orgId: string): Promise<Profile | null> {
+    await ensureMemories()
     store.memories.sweep()
     const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
     const vids = [...new Set(Object.values(accessible))]
@@ -276,6 +302,51 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     return rows.length
   }
 
+  // Backfill / rebuild the MEMORY layer from the typed graph that already exists. Atomic
+  // memories are normally consolidated at ingest from the triples the caller supplies, so
+  // data ingested BEFORE the memory layer (or via the LLM extractor) has graph edges but no
+  // memories - which makes context_profile / the get_context memory section look empty. This
+  // walks every LIVE typed edge (superseded ones are already excluded), resolves entity
+  // labels + the asserting record's ACL anchor (org + virtual record), and consolidates each
+  // into a current memory. Idempotent: clears the memory table first. Returns the count.
+  async function rebuildMemories(): Promise<number> {
+    store.db.exec("DELETE FROM memories")
+    const labelOf = new Map(
+      (store.db.query("SELECT id, data FROM nodes WHERE coll = 'entities'").all() as Array<{ id: string; data: string }>).map(
+        (r) => [r.id, (JSON.parse(r.data) as { label?: string }).label ?? r.id] as const,
+      ),
+    )
+    const recMeta = new Map(
+      (store.db.query("SELECT id, data FROM nodes WHERE coll = 'records'").all() as Array<{ id: string; data: string }>).map((r) => {
+        const d = JSON.parse(r.data) as { virtualRecordId?: string; orgId?: string }
+        return [r.id, { vid: d.virtualRecordId ?? r.id, orgId: d.orgId ?? "" }] as const
+      }),
+    )
+    const edges = store.db
+      .query(
+        `SELECT src, dst, label, provenance FROM edges
+         WHERE label NOT IN ('mentions','permissions','belongsTo','inheritPermissions','relates_to')
+           AND expired_at IS NULL`,
+      )
+      .all() as Array<{ src: string; dst: string; label: string; provenance: string }>
+    let count = 0
+    for (const e of edges) {
+      const from = labelOf.get(e.src)
+      const to = labelOf.get(e.dst)
+      if (!from || !to) continue
+      const prov = JSON.parse(e.provenance) as string[]
+      const rec = prov.map((p) => recMeta.get(p)).find(Boolean)
+      if (!rec) continue // no known asserting record → can't ACL-anchor it
+      const tally = await consolidateTriples(store.memories, embeddings, [{ from, to, type: e.label }], {
+        orgId: rec.orgId,
+        virtualRecordId: rec.vid,
+        sourceRecordId: prov[0],
+      })
+      count += tally.created + tally.updated
+    }
+    return count
+  }
+
   // Re-extract the knowledge graph for EVERY existing record (e.g. after switching
   // to an LLM extractor, or for data ingested before extraction existed). Clears
   // the concept layer (entities + mentions + relates_to), keeps records/ACL/vectors.
@@ -315,6 +386,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     forgetMemories,
     memoryHistory,
     buildProfile,
+    rebuildMemories,
     reindex,
     rebuildGraph,
   }
