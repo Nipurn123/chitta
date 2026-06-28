@@ -84,6 +84,19 @@ export function supersedeEdge(db: Database, src: string, label: string, keepDst:
   return Number(res.changes)
 }
 
+// Expire (close the validity interval on) live edges from `src` with `label`,
+// optionally restricted to a specific `dst`. Used when a memory is FORGOTTEN, so the
+// underlying typed-graph fact stops being asserted by KGQA / graph queries too -
+// keeping the forget coherent across both layers. Non-destructive (history kept).
+export function expireEdges(db: Database, src: string, label: string, dst?: string): number {
+  const now = Date.now()
+  const sql = dst
+    ? `UPDATE edges SET invalid_at = ?, expired_at = ? WHERE src = ? AND label = ? AND dst = ? AND expired_at IS NULL`
+    : `UPDATE edges SET invalid_at = ?, expired_at = ? WHERE src = ? AND label = ? AND expired_at IS NULL`
+  const res = dst ? db.query(sql).run(now, now, src, label, dst) : db.query(sql).run(now, now, src, label)
+  return Number(res.changes)
+}
+
 // Backfill provenance for LEGACY concept edges that predate provenance tracking
 // (migrated/older data has provenance '[]'). With per-edge ACL now fail-closed, an
 // un-provenanced edge would be hidden from everyone - so attribute each to the

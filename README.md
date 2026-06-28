@@ -118,9 +118,26 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 | Tool | Does |
 |---|---|
-| `context_ingest` | Store text → record node + **permission edges** (ACL) + **vector chunks** + **extracted concept graph** |
-| `get_context` | Retrieve ranked, cited, permission-filtered snippets |
+| `context_ingest` | Store text → record node + **permission edges** (ACL) + **vector chunks** + **extracted concept graph** + **atomic memories** |
+| `get_context` | Retrieve ranked, cited, permission-filtered snippets + the **current memory** (latest, contradiction-resolved) |
+| `context_forget` | Forget memories that are no longer true/wanted (soft-delete, within what you may see) |
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
+| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
+
+## Living memory (permission-aware)
+
+Beyond storing snippets, Chitta maintains a **living-memory layer** - the part most memory
+products treat as proprietary magic, here done natively and **ACL-scoped**:
+
+- **Atomic memories** - precise typed facts ("Sarah works at Meta"), not just chunks.
+- **Contradiction → versioning** - a newer single-valued fact **supersedes** the old one
+  (`works_at`: Google → Meta); recall returns the current truth, history is kept (v1→vN).
+- **Forgetting** - `context_forget` soft-deletes by description; optional TTL
+  (`CONTEXT_MEMORY_TTL_DAYS`) retires dynamic memories, static facts are exempt. It's
+  coherent: the underlying graph fact is expired too.
+- **Permission-aware throughout** - you can only recall or forget what your ACL permits,
+  across a *shared* org graph. (Most memory layers only isolate per-user pools - they have
+  no concept of "who is allowed to remember what" inside a team.)
 
 ## Run it
 

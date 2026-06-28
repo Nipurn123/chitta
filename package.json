@@ -1,6 +1,6 @@
 {
   "name": "@100xprompt/chitta",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "sqlite-vec": "^0.1.9",

@@ -6,6 +6,7 @@
 import type { ContextBackend } from "../backend"
 import { getContextTool } from "./get-context"
 import { contextIngestTool } from "./context-ingest"
+import { contextForgetTool } from "./context-forget"
 import { contextGraphTool } from "./context-graph"
 import { contextRebuildTool } from "./context-rebuild"
 import { contextRelateTool } from "./context-relate"
@@ -15,6 +16,7 @@ import type { ToolModule, ToolResult, ToolSchema } from "./types"
 const ALL: ToolModule[] = [
   getContextTool,
   contextIngestTool,
+  contextForgetTool,
   contextGraphTool,
   contextRebuildTool,
   contextRelateTool,

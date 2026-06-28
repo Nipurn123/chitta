@@ -20,6 +20,8 @@ export interface BackendStats {
   chunks: number
   entities: number
   relations: number
+  /** Living-memory layer counts (local mode). */
+  memories?: { total: number; current: number; forgotten: number }
 }
 
 export interface ExactAnswer {
@@ -49,6 +51,12 @@ export interface ContextBackend {
    *  complete edge set (same as context_relate), as readable fact lines. Null when no
    *  entity is named. Lets get_context reach graph-query completeness for breadth recall. */
   relatedFacts?: (q: string, limit?: number) => Promise<{ entity: string; facts: string[] } | null>
+  /** Living memory: the CURRENT truth (latest version, not forgotten) for a query,
+   *  ACL-scoped. Each item carries its version so callers can show what evolved. */
+  recallMemories?: (q: string, limit?: number) => Promise<Array<{ memory: string; version: number; isStatic: boolean }>>
+  /** Forget memories matching a description (within the caller's accessible set).
+   *  Soft-delete; returns the memory texts that were forgotten. */
+  forget?: (q: string, reason?: string) => Promise<string[]>
   ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
@@ -119,6 +127,12 @@ export function resolveBackend(): ContextBackend {
       })
       return { entity: n.entity, facts }
     },
+    // Living memory: current truth (latest, non-forgotten), ACL-scoped, version-tagged.
+    recallMemories: async (q, limit) => {
+      const mems = await ctx.recallMemories(q, ctx.userId, ctx.orgId, limit && limit > 0 ? limit : 8)
+      return mems.map((m) => ({ memory: m.memory, version: m.version, isStatic: m.isStatic }))
+    },
+    forget: (q, reason) => ctx.forgetMemories(q, ctx.userId, ctx.orgId, reason),
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })
@@ -140,6 +154,7 @@ export function resolveBackend(): ContextBackend {
       chunks: count("SELECT count(*) c FROM chunks"),
       entities: count("SELECT count(*) c FROM nodes WHERE coll = 'entities'"),
       relations: count("SELECT count(*) c FROM edges WHERE label = 'relates_to'"),
+      memories: ctx.store.memories.counts(),
     }),
   }
 }

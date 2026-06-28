@@ -8,6 +8,15 @@ import { DeterministicExtractor, stripBoilerplate, slugify, entityId, type Knowl
 import { CodeExtractor } from "./code-extractor"
 import { guardIngest } from "../security/limits"
 import { sanitizeBody, sanitizeLabel } from "../security/sanitize"
+import { consolidateTriples } from "./memory/consolidate"
+
+// Optional default TTL for dynamic memories (CONTEXT_MEMORY_TTL_DAYS). Unset ⇒ memories
+// never auto-expire; set ⇒ non-static memories get a forget_after and the TTL sweep
+// retires them. Static facts (names, birthplaces) are always exempt.
+function memoryTtlMs(): number | undefined {
+  const days = Number(process.env.CONTEXT_MEMORY_TTL_DAYS ?? 0)
+  return days > 0 ? days * 24 * 60 * 60 * 1000 : undefined
+}
 
 export interface IngestDoc {
   recordId: string
@@ -193,6 +202,23 @@ export class Ingestor {
         doc.entities?.length || doc.relations?.length
           ? this.writeProvidedGraph(doc.recordId, doc.entities ?? [], doc.relations ?? [])
           : await this.writeGraphFor(doc.recordId, cleanText, doc.recordName)
+    }
+
+    // (5) MEMORIES: the living-memory layer. Consolidate the PRECISE typed triples the
+    // caller supplied into atomic memories (contradiction → new version, dedup, TTL).
+    // We use only the provided typed predicates - the deterministic extractor emits
+    // symmetric "relates_to" co-occurrence, which is graph signal, not an atomic fact.
+    // Inherits this record's ACL via virtualRecordId. No-op when no typed triples given.
+    if (doc.relations?.length) {
+      const typed = doc.relations.filter((r) => (r.type || "").trim().toLowerCase().replace(/\s+/g, "_") !== "relates_to")
+      if (typed.length) {
+        await consolidateTriples(this.store.memories, this.embeddings, typed, {
+          orgId: doc.orgId,
+          virtualRecordId: vid,
+          sourceRecordId: doc.recordId,
+          ttlMs: memoryTtlMs(),
+        })
+      }
     }
 
     return { recordId: doc.recordId, chunks: chunks.length, entities }

@@ -5,11 +5,17 @@ import { test, expect, describe } from "bun:test"
 import { getContextTool } from "../../src/mcp/tools/get-context"
 import { RetrievalStatus } from "../../src/types"
 
-function mockBackend(opts: { ask?: any; snippets: string[]; relatedFacts?: { entity: string; facts: string[] } | null }) {
+function mockBackend(opts: {
+  ask?: any
+  snippets: string[]
+  relatedFacts?: { entity: string; facts: string[] } | null
+  memories?: Array<{ memory: string; version: number; isStatic: boolean }>
+}) {
   const calls: { limit?: number }[] = []
   const relCalls: { limit?: number }[] = []
   const backend: any = {
     ask: opts.ask ? async () => opts.ask : undefined,
+    recallMemories: "memories" in opts ? async () => opts.memories ?? [] : undefined,
     relatedFacts:
       "relatedFacts" in opts
         ? async (_q: string, limit?: number) => {
@@ -101,6 +107,20 @@ describe("get_context is comprehensive (additive, not short-circuited)", () => {
     expect(text).toContain("Precise answer:")
     expect(text).not.toContain("Related facts about") // gated off for focused queries with a precise hit
     expect(relCalls.length).toBe(0) // not even called
+  })
+
+  test("surfaces current memory (latest, contradiction-resolved) as its own section", async () => {
+    const { backend } = mockBackend({
+      snippets: ["Sarah works at Google", "Sarah works at Meta"], // raw text still has both
+      memories: [
+        { memory: "Sarah works at Meta", version: 2, isStatic: false }, // the resolved truth
+        { memory: "Sarah born in Paris", version: 1, isStatic: true },
+      ],
+    })
+    const text = await run({ query: "where does Sarah work" }, backend)
+    expect(text).toContain("Current memory")
+    expect(text).toContain("Sarah works at Meta")
+    expect(text).toContain("(updated, v2)") // shows it evolved
   })
 
   test("narrow query with NO KGQA hit still gets the neighborhood (rescue path)", async () => {

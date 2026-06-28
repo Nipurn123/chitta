@@ -63,6 +63,21 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     }
   }
 
+  // (2b) Living memory: the CURRENT truth (latest version, not forgotten) about the
+  // query, ACL-scoped. This is the evolving/deduped/forgetting-aware layer - it reflects
+  // contradictions already resolved (e.g. "works at Meta", not the superseded "Google").
+  // Distinct from the graph neighborhood (raw edges) and ranked snippets (raw text).
+  let memories = ""
+  if (backend.recallMemories) {
+    const mems = await backend.recallMemories(query, limit && limit > 0 ? limit : 8)
+    if (mems.length) {
+      const body = mems
+        .map((m) => `• ${sanitizeText(m.memory)}${m.version > 1 ? ` (updated, v${m.version})` : ""}`)
+        .join("\n")
+      memories = `Current memory (latest, contradictions resolved):\n${body}`
+    }
+  }
+
   // (3) Full ranked recall (vector + BM25 + GraphRAG), breadth-aware.
   const res = await backend.query(query, limit)
   const recalled =
@@ -70,7 +85,7 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
       ? renderRecalled(res.searchResults.map((r) => ({ content: r.content, source: r.metadata.recordName ?? "untitled" })))
       : ""
 
-  const sections = [highlight, graphFacts, recalled].filter(Boolean)
+  const sections = [highlight, memories, graphFacts, recalled].filter(Boolean)
   let text: string
   if (sections.length) text = sections.join("\n\n---\n\n")
   else

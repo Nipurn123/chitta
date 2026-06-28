@@ -57,6 +57,45 @@ export function migrate(db: Database): void {
   // sure we are the relationship is real. Added idempotently so existing DBs upgrade.
   const ecols = (db.query("PRAGMA table_info(edges)").all() as Array<{ name: string }>).map((c) => c.name)
   if (!ecols.includes("confidence")) db.exec("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
+  migrateMemories(db)
+}
+
+// The MEMORIES table - the living-memory layer (Supermemory-style atomic memories,
+// but permission-aware). Each row is ONE atomic fact, not a chunk. It carries the
+// version chain (root_id/parent_id/version/is_latest), the forgetting axes
+// (is_forgotten/forget_after/forget_reason), the static-vs-dynamic flag, and an ACL
+// anchor (virtual_record_id - inherits the source record's permissions, exactly like
+// chunks). A "current" memory has is_latest=1 AND is_forgotten=0. Contradictions
+// supersede (flip is_latest, +1 version) - history is never deleted. The embedding
+// makes memories semantically recallable; the subject_key groups a single-valued
+// fact's versions (functional predicate) and de-duplicates re-asserted triples.
+export function migrateMemories(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      org_id TEXT,
+      virtual_record_id TEXT,
+      subject_key TEXT,
+      memory TEXT NOT NULL,
+      embedding TEXT,
+      is_static INTEGER NOT NULL DEFAULT 0,
+      is_forgotten INTEGER NOT NULL DEFAULT 0,
+      forget_after INTEGER,
+      forget_reason TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      parent_id TEXT,
+      root_id TEXT,
+      is_latest INTEGER NOT NULL DEFAULT 1,
+      relation TEXT,
+      source_record_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memories_acl ON memories(virtual_record_id, is_latest, is_forgotten);
+    CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject_key, is_latest);
+    CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_id);
+    CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source_record_id);
+  `)
 }
 
 // The edges table is a property-graph relation store shared by ACL (permissions/

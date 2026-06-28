@@ -19,7 +19,17 @@ import type { LlmExtractor } from "./llm-extractor"
 import type { EmbeddingProvider } from "../provider"
 import type { RetrievalResponse } from "../types"
 import { hybridSearch } from "./retrieval/hybrid-retriever"
+import { cosine } from "./retrieval/passage"
 import type { SearchTrace } from "./retrieval/trace"
+
+/** A current memory surfaced to a caller (latest version, not forgotten), ACL-scoped. */
+export interface RecalledMemory {
+  memory: string
+  version: number
+  isStatic: boolean
+  updatedAt: number
+  rootId: string
+}
 
 export { SqliteStore } from "./sqlite-store"
 export { SqliteGraphProvider } from "./sqlite-graph-provider"
@@ -149,6 +159,59 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace, limit)
   }
 
+  // LIVING MEMORY - the permission-aware atomic-memory layer (Supermemory parity, but
+  // ACL-scoped). recallMemories returns the CURRENT truth (latest version, not forgotten)
+  // about whatever the query is asking, ranked by semantic similarity, gated by the same
+  // accessible-record set the rest of retrieval uses (leak-proof by construction).
+  async function recallMemories(query: string, userId: string, orgId: string, limit = 8): Promise<RecalledMemory[]> {
+    store.memories.sweep() // lazy TTL: retire any expired dynamic memories first
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vids = [...new Set(Object.values(accessible))]
+    const rows = store.memories.recall(vids)
+    if (rows.length === 0) return []
+    const qv = await (embeddings.embedQuery ? embeddings.embedQuery(query) : embeddings.embedDense(query))
+    const scored = rows.map((r) => ({ r, s: r.embedding ? cosine(qv, JSON.parse(r.embedding) as number[]) : 0 }))
+    scored.sort((a, b) => b.s - a.s)
+    return scored.slice(0, limit).map(({ r }) => ({
+      memory: r.memory, version: r.version, isStatic: !!r.is_static, updatedAt: r.updated_at, rootId: r.root_id ?? r.id,
+    }))
+  }
+
+  // Forget memories matching a description (semantic similarity OR substring), within
+  // the caller's accessible set only - you can never forget what you can't see. Soft
+  // delete (history kept, excluded from recall). Returns the memory texts forgotten.
+  async function forgetMemories(query: string, userId: string, orgId: string, reason = "forgotten by user"): Promise<string[]> {
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vids = [...new Set(Object.values(accessible))]
+    const rows = store.memories.recall(vids)
+    if (rows.length === 0) return []
+    const q = query.trim().toLowerCase()
+    const qv = await (embeddings.embedQuery ? embeddings.embedQuery(query) : embeddings.embedDense(query))
+    const targets = rows.filter((r) => {
+      if (r.memory.toLowerCase().includes(q)) return true
+      return r.embedding ? cosine(qv, JSON.parse(r.embedding) as number[]) >= 0.6 : false
+    })
+    if (targets.length === 0) return []
+    store.memories.forget(targets.map((r) => r.id), reason)
+    // Keep the forget COHERENT across layers: also expire the underlying typed edge so
+    // KGQA / graph queries stop asserting the fact too. subject_key is `subj|pred` (a
+    // single-valued fact) or `subj|pred|obj` (multi-valued) - both carry entity ids.
+    for (const r of targets) {
+      const parts = r.subject_key.split("|")
+      if (parts.length === 2) store.expireEdges(parts[0], parts[1])
+      else if (parts.length === 3) store.expireEdges(parts[0], parts[1], parts[2])
+    }
+    return targets.map((r) => r.memory)
+  }
+
+  // How a fact evolved: the full version chain (v1 → vN) for a memory's root. ACL is
+  // enforced by the caller (recallMemories returns only accessible roots).
+  function memoryHistory(rootId: string): Array<{ memory: string; version: number; isLatest: boolean; forgotten: boolean }> {
+    return store.memories.history(rootId).map((r) => ({
+      memory: r.memory, version: r.version, isLatest: !!r.is_latest, forgotten: !!r.is_forgotten,
+    }))
+  }
+
   // Same retrieval, but also returns the pipeline TRACE (for the UI's explainability).
   async function searchTraced(query: string, userId: string, orgId: string) {
     const trace: SearchTrace = { counts: { vector: 0, keyword: 0, graph: 0, fused: 0 }, reranked: false, items: [] }
@@ -170,6 +233,11 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     for (const r of rows) {
       const emb = await embeddings.embedDense(r.content)
       store.addChunk(r.point_id, r.virtual_record_id, r.org_id, r.content, emb)
+    }
+    // Memories carry their own embeddings (for semantic recall) - re-embed them too so
+    // an embedder switch doesn't leave the memory layer in a stale vector space.
+    for (const m of store.memories.all()) {
+      store.memories.updateEmbedding(m.id, await embeddings.embedDense(m.memory))
     }
     return rows.length
   }
@@ -209,6 +277,9 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     deleteRecord,
     searchWithGraph,
     searchTraced,
+    recallMemories,
+    forgetMemories,
+    memoryHistory,
     reindex,
     rebuildGraph,
   }

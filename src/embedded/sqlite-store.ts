@@ -18,6 +18,7 @@ import { migrate, tryEnableExtensions, tryLoadVec } from "./store/schema"
 import * as graph from "./store/nodes-edges"
 import * as fts from "./store/fts"
 import { ChunkRepo } from "./store/chunks"
+import { MemoryRepo } from "./store/memories"
 import * as salience from "./store/salience"
 
 export type Json = Record<string, unknown>
@@ -26,6 +27,7 @@ export class SqliteStore {
   readonly db: Database
   readonly vecEnabled: boolean
   readonly ftsEnabled: boolean
+  readonly memories: MemoryRepo
   private readonly chunks: ChunkRepo
 
   constructor(path = ":memory:") {
@@ -45,6 +47,7 @@ export class SqliteStore {
     this.vecEnabled = encrypted ? false : tryLoadVec(this.db)
     this.ftsEnabled = fts.tryEnableFts(this.db)
     this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, encrypted)
+    this.memories = new MemoryRepo(this.db)
   }
 
   // ── Graph: nodes & edges ────────────────────────────────────────────────
@@ -62,6 +65,10 @@ export class SqliteStore {
 
   supersedeEdge(src: string, label: string, keepDst: string, atTime = Date.now()): number {
     return graph.supersedeEdge(this.db, src, label, keepDst, atTime)
+  }
+
+  expireEdges(src: string, label: string, dst?: string): number {
+    return graph.expireEdges(this.db, src, label, dst)
   }
 
   backfillEdgeProvenance(): number {

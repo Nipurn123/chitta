@@ -6,6 +6,34 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-29
+
+### Added
+- **Living memory - permission-aware atomic memories (the Supermemory-parity layer, but
+  ACL-scoped).** A new first-class memory layer on top of the typed graph: ingested typed
+  triples are consolidated into **atomic memories** with full version chains, forgetting,
+  and a static-vs-dynamic distinction - all gated by the same ACL invariant as the rest of
+  retrieval (you can only ever recall or forget what you're permitted to see).
+  - *Contradiction → versioning:* a new single-valued fact that conflicts with the current
+    one (e.g. `works_at`: Google → Meta) **supersedes** it - the old version's `is_latest`
+    flips, a new version (+1) is linked via the chain, and recall returns only the current
+    truth. History is never deleted (`memoryHistory(root)` returns the full v1→vN chain).
+  - *Forgetting:* new `context_forget` MCP tool soft-deletes memories matching a natural-
+    language description (semantic + substring), within the caller's accessible set only;
+    it's **coherent** - the underlying typed graph edge is expired too, so KGQA / graph
+    queries also stop asserting it. Optional TTL via `CONTEXT_MEMORY_TTL_DAYS` retires
+    dynamic memories on a lazy sweep; static facts (names, birthplaces) are exempt.
+  - *Retrieval:* `get_context` now includes a **"Current memory (latest, contradictions
+    resolved)"** section - the deduped, forgetting-aware view, distinct from the raw graph
+    neighborhood and ranked snippets. `context_about` reports live memory counts.
+  - New: `src/embedded/store/memories.ts` (repo), `src/embedded/memory/consolidate.ts`
+    (the consolidation engine), `migrateMemories` (idempotent schema), `recallMemories` /
+    `forgetMemories` / `memoryHistory` on the embedded context, `store.expireEdges`, and the
+    `context_forget` tool. Regressions: `test/embedded/memory.test.ts` (contradiction,
+    dedup, forgetting, TTL, **cross-user ACL isolation**) + `test/mcp/get-context.test.ts`.
+    No LLM required - it consolidates the precise typed triples the calling model already
+    supplies; memory embeddings are re-embedded on embedder drift via `reindex()`.
+
 ## [0.1.4] - 2026-06-28
 
 ### Fixed

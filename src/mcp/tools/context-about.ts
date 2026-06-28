@@ -45,6 +45,9 @@ async function describe(backend: ContextBackend): Promise<string> {
   if (backend.stats) {
     const s = await backend.stats()
     lines.push(`- contents: ${s.records} record(s), ${s.chunks} chunk(s), ${s.entities} concept(s), ${s.relations} relationship(s)`)
+    if (s.memories !== undefined) {
+      lines.push(`- living memory: ${s.memories.current} current memor(ies), ${s.memories.forgotten} forgotten (of ${s.memories.total} total versions)`)
+    }
   }
   lines.push("", "## Tools")
   for (const t of listedTools) lines.push(`- **${t.name}** - ${t.description}`)
