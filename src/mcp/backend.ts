@@ -101,8 +101,9 @@ export function resolveBackend(): ContextBackend {
       ? `LLM typed-triples (${process.env.CONTEXT_LLM_MODEL || "default"} @ ${process.env.CONTEXT_LLM_URL})`
       : "caller-supplied typed triples (the calling model passes entities+relations to context_ingest); " +
         "deterministic fallback when none given",
-    query: (q) => ctx.searchWithGraph(q, ctx.userId, ctx.orgId), // vector + ACL + GraphRAG expansion
-    ask: (q) => ctx.ask(q, ctx.userId, ctx.orgId), // KGQA: exact answer from the typed graph
+    // reconcile() heals embedder/dim drift once before any vector op (ingest already does)
+    query: async (q) => (await ctx.reconcile(), ctx.searchWithGraph(q, ctx.userId, ctx.orgId)), // vector + ACL + GraphRAG
+    ask: async (q) => (await ctx.reconcile(), ctx.ask(q, ctx.userId, ctx.orgId)), // KGQA: exact answer from the typed graph
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })

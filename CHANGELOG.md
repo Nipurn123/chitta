@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+- **Embedding dimension-mismatch crash.** Ingesting/querying a DB whose stored vectors were
+  written by a different embedder (e.g. real bge-384 vs hashing-64) threw "expected 384, got
+  64" on the `vec0` insert and crashed `context_ingest`. The store now self-heals: the vec
+  write is crash-proof, and a one-time `reconcile()` detects the dim change and reindexes the
+  whole DB to the current embedder (wired into ingest + query). Regression:
+  `test/embedded/embedder-drift.test.ts`.
+
 ### Security
 - **Hardening bundle — ahead-of-field defenses (`src/security/`):**
   - *Memory-poisoning / indirect prompt injection:* `get_context` now returns recalled

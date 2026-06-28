@@ -86,9 +86,38 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     return kgqa.answer(question, userId, orgId)
   }
 
+  // Self-heal embedder/dim drift: a DB is tied to ONE embedder's vector space. If the
+  // stored vectors were written by a different embedder than the one now active (e.g. the
+  // default flipped to real embeddings, or transformers can't load and it fell back to
+  // hashing), the dims won't match — which would crash the ANN insert and corrupt cosine.
+  // We detect the change once and reindex the whole DB to the CURRENT embedder. Runs at
+  // most once per process; never blocks (failures are swallowed, ingest/query proceed).
+  let reconcilePromise: Promise<void> | null = null
+  function reconcile(): Promise<void> {
+    return (reconcilePromise ??= (async () => {
+      try {
+        const row = store.db
+          .query("SELECT embedding FROM chunks WHERE embedding IS NOT NULL LIMIT 1")
+          .get() as { embedding: string } | undefined
+        if (!row) return // empty DB → the current embedder defines the vector space
+        const storedDim = (JSON.parse(row.embedding) as number[]).length
+        const curDim = (await embeddings.embedDense("dimension probe")).length
+        if (storedDim !== curDim) {
+          opts.log?.error(
+            `[chitta] embedder changed for this DB (${storedDim}d → ${curDim}d); reindexing all chunks to the current embedder`,
+          )
+          await reindex()
+        }
+      } catch {
+        /* never block ingest/query on reconcile */
+      }
+    })())
+  }
+
   // Authorized write path: checks the acting user MAY create + may grant the
   // requested sharing, stamps ownership, then ingests. Throws AuthorizationError.
   async function authorizedIngest(actingUserId: string, doc: IngestDoc) {
+    await reconcile() // heal embedder/dim drift before writing new vectors
     authorizer.assertCanCreate(actingUserId, doc.orgId, doc.permittedPrincipals ?? [], doc.shareWithOrg)
     const principals = [...new Set([...(doc.permittedPrincipals ?? []), actingUserId])] // owner can always read
     return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals })
@@ -175,6 +204,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     kgqa,
     graphQuery,
     ask,
+    reconcile,
     authorizedIngest,
     deleteRecord,
     searchWithGraph,

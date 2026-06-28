@@ -44,17 +44,25 @@ export class ChunkRepo {
       .run(pointId, virtualRecordId, orgId, content, JSON.stringify(embedding))
     const rowid = Number(res.lastInsertRowid)
     if (this.vecEnabled) {
-      this.ensureVec(embedding.length)
-      if (this.encrypted) {
-        // libSQL path: validated literal SQL (rowid is our integer; embedding is a
-        // float array we produced — every element checked finite → safe to inline).
-        const rid = Math.trunc(rowid)
-        const lit = vecLiteral(embedding)
-        this.db.exec(`DELETE FROM vec_chunks WHERE rowid = ${rid}`)
-        this.db.exec(`INSERT INTO vec_chunks(rowid, embedding) VALUES (${rid}, '${lit}')`)
-      } else {
-        this.db.query("DELETE FROM vec_chunks WHERE rowid = ?").run(rowid)
-        this.db.query("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)").run(rowid, JSON.stringify(embedding))
+      // Never let the ANN write crash an ingest: if the embedding dim doesn't match an
+      // existing vec0 index (the embedder changed for this DB), sqlite-vec throws. We skip
+      // the ANN row (brute-force cosine still serves retrieval) — reconcile() upstream
+      // detects the dim change and reindexes the whole DB to the current embedder.
+      try {
+        this.ensureVec(embedding.length)
+        if (this.encrypted) {
+          // libSQL path: validated literal SQL (rowid is our integer; embedding is a
+          // float array we produced — every element checked finite → safe to inline).
+          const rid = Math.trunc(rowid)
+          const lit = vecLiteral(embedding)
+          this.db.exec(`DELETE FROM vec_chunks WHERE rowid = ${rid}`)
+          this.db.exec(`INSERT INTO vec_chunks(rowid, embedding) VALUES (${rid}, '${lit}')`)
+        } else {
+          this.db.query("DELETE FROM vec_chunks WHERE rowid = ?").run(rowid)
+          this.db.query("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)").run(rowid, JSON.stringify(embedding))
+        }
+      } catch {
+        /* dim mismatch / vec unavailable → ANN skipped for this chunk; reconcile fixes it */
       }
     }
     if (this.ftsEnabled) {
