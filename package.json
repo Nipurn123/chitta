@@ -1,6 +1,6 @@
 {
   "name": "@100xprompt/chitta",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Chitta - permission-aware memory for AI agents: a knowledge-graph + vector memory MCP server with per-user access control. Runs on Bun. By 100xprompt.",
   "type": "module",
   "license": "MIT",
