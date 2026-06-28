@@ -27,8 +27,8 @@ Chitta gives you persistent, permission-aware memory via MCP tools. Use it proac
 - **After learning** a durable fact, decision, or preference, call **context_ingest** to store it.
 - To understand **how things relate**, call **context_graph**.
 
-If MCP tools are unavailable, use the CLI: \`npx @100xprompt/chitta query "<q>"\` and
-\`npx @100xprompt/chitta ingest --text "<fact>"\`.
+If MCP tools are unavailable, use the CLI: \`bunx @100xprompt/chitta query "<q>"\` and
+\`bunx @100xprompt/chitta ingest --text "<fact>"\`.
 `
 
 export function skillContent(): string {

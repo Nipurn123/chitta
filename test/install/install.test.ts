@@ -10,9 +10,9 @@ const tmp = () => mkdtempSync(join(tmpdir(), "chitta-install-"))
 
 describe("serverEntry dialects", () => {
   test("standard = command/args, env only when present", () => {
-    expect(serverEntry("standard", {})).toEqual({ command: "npx", args: ["-y", PKG] })
+    expect(serverEntry("standard", {})).toEqual({ command: "bunx", args: [PKG] })
     expect(serverEntry("standard", { CONTEXT_USER_ID: "a" })).toEqual({
-      command: "npx", args: ["-y", PKG], env: { CONTEXT_USER_ID: "a" },
+      command: "bunx", args: [PKG], env: { CONTEXT_USER_ID: "a" },
     })
   })
   test("vscode adds type:stdio", () => {
@@ -23,7 +23,7 @@ describe("serverEntry dialects", () => {
   })
   test("local uses combined command array + environment + enabled", () => {
     const e = serverEntry("local", { X: "1" }) as any
-    expect(e.command).toEqual(["npx", "-y", PKG])
+    expect(e.command).toEqual(["bunx", PKG])
     expect(e.type).toBe("local")
     expect(e.enabled).toBe(true)
     expect(e.environment).toEqual({ X: "1" })
@@ -32,7 +32,7 @@ describe("serverEntry dialects", () => {
   test("trae is a named array entry with command array", () => {
     const e = serverEntry("trae", {}) as any
     expect(e.name).toBe("chitta")
-    expect(e.command).toEqual(["npx", "-y", PKG])
+    expect(e.command).toEqual(["bunx", PKG])
   })
 })
 
@@ -44,7 +44,7 @@ describe("writeJsonConfig", () => {
     writeJsonConfig(p, "mcpServers", serverEntry("standard", {}), false) // re-run
     const cfg = JSON.parse(readFileSync(p, "utf8"))
     expect(cfg.mcpServers.other).toEqual({ command: "foo" }) // preserved
-    expect(cfg.mcpServers.chitta.command).toBe("npx")
+    expect(cfg.mcpServers.chitta.command).toBe("bunx")
     expect(Object.keys(cfg.mcpServers)).toEqual(["other", "chitta"]) // no dup
   })
   test("array form (trae) dedups by name", () => {
@@ -72,7 +72,8 @@ describe("writeCodexToml", () => {
     const t = readFileSync(p, "utf8")
     expect(t).toContain("[other]") // preserved
     expect(t.match(/\[mcp_servers\.chitta\]/g)).toHaveLength(1) // single table
-    expect(t).toContain('args = ["-y", "@100xprompt/chitta"]')
+    expect(t).toContain('command = "bunx"')
+    expect(t).toContain('args = ["@100xprompt/chitta"]')
     expect(t).toContain("[mcp_servers.chitta.env]")
     expect(t).toContain('CONTEXT_USER_ID = "alice"')
   })

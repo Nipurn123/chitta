@@ -4,4 +4,3 @@ dist/
 *.db-*
 bak-*
 .DS_Store
-dist-npm/

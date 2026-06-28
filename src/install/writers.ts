@@ -5,12 +5,14 @@ import { dirname } from "node:path"
 import type { Entry } from "./platforms"
 
 export const PKG = "@100xprompt/chitta"
-const NPX = ["npx", "-y", PKG] // [command, ...args]
+// Chitta runs on the Bun runtime, so it launches via `bunx` (Bun's package runner).
+// Users need Bun once: `curl -fsSL https://bun.sh/install | bash`.
+const RUN = ["bunx", PKG] // [command, ...args]
 
 /** Build the server-entry object in the dialect a given tool expects. */
 export function serverEntry(entry: Entry, env: Record<string, string>): unknown {
   const hasEnv = Object.keys(env).length > 0
-  const cmd = { command: "npx", args: ["-y", PKG] }
+  const cmd = { command: "bunx", args: [PKG] }
   switch (entry) {
     case "standard":
       return { ...cmd, ...(hasEnv ? { env } : {}) }
@@ -19,9 +21,9 @@ export function serverEntry(entry: Entry, env: Record<string, string>): unknown 
     case "zed":
       return { source: "custom", ...cmd, ...(hasEnv ? { env } : {}) }
     case "local": // opencode / kilo: combined command array + `environment` + enabled
-      return { type: "local", command: [...NPX], enabled: true, ...(hasEnv ? { environment: env } : {}) }
+      return { type: "local", command: [...RUN], enabled: true, ...(hasEnv ? { environment: env } : {}) }
     case "trae": // array entry carrying its own name + combined command array
-      return { name: "chitta", command: [...NPX], ...(hasEnv ? { env } : {}) }
+      return { name: "chitta", command: [...RUN], ...(hasEnv ? { env } : {}) }
   }
 }
 
@@ -65,7 +67,7 @@ export function writeCodexToml(path: string, env: Record<string, string>): void 
   // strip any existing chitta block (the table + its sub-tables up to the next top-level [table])
   text = text.replace(/\n*\[mcp_servers\.chitta\][\s\S]*?(?=\n\[[^.\]]|\n\[mcp_servers\.(?!chitta)|\s*$)/g, "\n")
   text = text.replace(/\n{3,}/g, "\n\n").trimEnd()
-  let block = `\n\n[mcp_servers.chitta]\ncommand = "npx"\nargs = ["-y", "${PKG}"]\n`
+  let block = `\n\n[mcp_servers.chitta]\ncommand = "bunx"\nargs = ["${PKG}"]\n`
   const keys = Object.keys(env)
   if (keys.length) {
     block += `\n[mcp_servers.chitta.env]\n`

@@ -23,8 +23,10 @@ semantic versioning once it reaches 1.0.
   Cursor, VS Code/Copilot, Windsurf, Zed, Cline, Roo, Codex, Gemini CLI, opencode, Kiro, Amp,
   Factory Droid, Kilo. Per-format writers merge idempotently into existing config; `--print`
   covers any other MCP client. New `src/bin.ts` dispatcher (server / install / cli),
-  `src/install/*`, `assets/skill/SKILL.md`. npx distribution via a Node shim + per-platform
-  bun-compiled binaries (`npm/shim.cjs`, `tools/build-binaries.ts`).
+  `src/install/*`, `assets/skill/SKILL.md`. Published to npm as `@100xprompt/chitta` and run
+  via `bunx` (the Bun runtime ships SQLite + the vector index in-process — no native build
+  step or signed binary needed; macOS 26 kills unsigned compiled binaries, so the bun-compile
+  distribution was dropped in favor of source-on-bunx).
 - `ARCHITECTURE.md` - pipeline diagram, module-responsibility tables, the security
   invariant, and an "Adding a new backend" guide.
 - `examples/permission-aware-retrieval/` - a complete, runnable demo of two users sharing

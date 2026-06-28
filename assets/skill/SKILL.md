@@ -34,8 +34,8 @@ permissions allow. Use it proactively — memory is only useful if you reach for
 If MCP tools aren't available in this environment, shell out:
 
 ```bash
-npx @100xprompt/chitta query "<question>"          # recall
-npx @100xprompt/chitta ingest --text "<fact>" --name "<title>"   # store
+bunx @100xprompt/chitta query "<question>"          # recall
+bunx @100xprompt/chitta ingest --text "<fact>" --name "<title>"   # store
 ```
 
 ## Guardrails
