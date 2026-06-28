@@ -100,6 +100,12 @@ bunx @100xprompt/chitta install --print         # just print the MCP config to p
 Options: `--project` (write project-scoped config instead of global) · `--user-id <id> --org-id <id>`
 (bake identity into the config) · `--list` (show all tools) · `uninstall`.
 
+**Optional extras** (kept out of the default install so `bunx` stays lightweight — the core
+runs great with the built-in fast hashing embedder):
+- Real semantic embeddings: `bun add @huggingface/transformers` then set `CONTEXT_EMBEDDINGS=real`
+  (the default `auto` already uses them when present, else falls back to hashing).
+- Encryption at rest: `bun add libsql` then set `CONTEXT_DB_KEY=<key>` (transparent AES whole-file).
+
 **Supported tools (15):** Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Windsurf,
 Zed, Cline, Roo Code, Codex CLI, Gemini CLI, opencode, Kiro, Amp, Factory Droid, Kilo Code.
 Skill (not just MCP) is installed for the ones that support it (Claude Code, Cursor, Gemini,

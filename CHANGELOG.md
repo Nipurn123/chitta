@@ -7,6 +7,13 @@ semantic versioning once it reaches 1.0.
 ## [Unreleased]
 
 ### Fixed
+- **`bunx` launch failure / "server disconnected" + 2.4 GB install.** `@huggingface/transformers`
+  (~2.4 GB) and `libsql` were `optionalDependencies`, so `bunx @100xprompt/chitta` tried to
+  download them on every launch — failing on tight disks and bloating installs. They're now
+  **opt-in extras** (`bun add @huggingface/transformers` / `bun add libsql`); the published
+  package installs only the ~55 MB core. The default `auto` embedder uses real embeddings when
+  the package is present, else the fast hashing embedder. (Encryption + reranker code unchanged;
+  both lazy-import and degrade gracefully when the extra isn't installed.)
 - **`get_context` incompleteness (was returning ~20% of relevant context).** Two causes:
   (1) a **KGQA short-circuit** returned only the 1-few exact typed-graph facts and skipped the
   ranked retrieval entirely; (2) the final cut was **`topk=6`**. Now `get_context` is

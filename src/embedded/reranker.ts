@@ -28,7 +28,9 @@ export class CrossEncoderReranker implements Reranker {
     if (!this.loading) {
       this.loading = (async () => {
         try {
-          const t: any = await import("@huggingface/transformers")
+          // Optional dep — indirect the specifier so tsc doesn't require it to resolve.
+          const spec = "@huggingface/transformers"
+          const t: any = await import(spec as string)
           this.tokenizer = await t.AutoTokenizer.from_pretrained(this.modelId)
           this.model = await t.AutoModelForSequenceClassification.from_pretrained(this.modelId, { quantized: true })
         } catch {
