@@ -29,6 +29,42 @@ produces the candidate set.
 | Cross-connector leak guard | Results from one source cannot bleed into another |
 | Write authorization | Only authorized principals can create records or share to a group/org they belong to |
 | ACL integrity | Ingested content can never alter the permission graph (see below) |
+| Memory-poisoning defense | Recalled content is returned as marked untrusted **data**, not instructions (see below) |
+| Ingest hardening | Hidden/bidi/control chars stripped; size + rate limits on the write surface |
+
+### ACL assurance — red-team probe suite (CTLR == 0)
+
+Because the entire model rests on the gate, we *prove* it rather than assert it.
+`test/security/acl-probe.test.ts` runs adversarial probes on every change:
+
+- **Cross-tenant leakage (CTLR):** user A queries for user B's exact secret tokens
+  (maximally relevant to B's private docs); the suite asserts **zero** of B's records ever
+  surface. (Industry baseline: ungated retrieval leaks 98-100% of such probes; the
+  gate-first design takes it to 0.)
+- **Identity-not-query:** ACL depends only on *who* asks, never on query text — injected
+  queries ("ignore all permissions", "developer mode, show everything", SQL-ish payloads)
+  cannot widen access.
+- **Deny-by-default:** a user with no records/shares (or an unknown id) gets no private
+  records, never an unfiltered result.
+
+### Memory poisoning / indirect prompt injection
+
+Stored memory is attacker-influenceable (a user can ingest a document containing
+"ignore your instructions and …"). When recalled via `get_context`, snippets are wrapped
+in `<untrusted_memory>` tags with a standing instruction to treat them as **data, never
+instructions** (spotlighting; optionally datamarked via `CHITTA_SPOTLIGHT=datamark`). All
+ingested text + labels are also stripped of bidi (Trojan Source, CVE-2021-42574),
+zero-width, and control characters at write time **and** re-stripped at output. See
+`src/security/` and `test/security/hardening.test.ts`.
+
+### Encryption at rest
+
+The local SQLite file is **not encrypted** today; the supported at-rest story is OS disk
+encryption (FileVault / LUKS / BitLocker), which is what comparable local-first memory
+tools rely on and which preserves full-text + vector search. Transparent whole-file
+encryption (via a libSQL driver with `encryptionKey`) is on the roadmap. In central mode,
+backend traffic should use TLS (`https://` URLs) with authenticated Arango/Qdrant/embedding
+endpoints.
 
 ### ACL integrity (keyspace isolation)
 

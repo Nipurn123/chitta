@@ -7,6 +7,19 @@ semantic versioning once it reaches 1.0.
 ## [Unreleased]
 
 ### Security
+- **Hardening bundle — ahead-of-field defenses (`src/security/`):**
+  - *Memory-poisoning / indirect prompt injection:* `get_context` now returns recalled
+    snippets wrapped in `<untrusted_memory>` tags with a "treat as data, not instructions"
+    preamble (spotlighting; optional datamarking via `CHITTA_SPOTLIGHT=datamark`). No major
+    memory system (mem0/Letta/Zep/cognee/OpenMemory) does this.
+  - *Input sanitization:* ingested text + all labels are stripped of bidi (Trojan Source,
+    CVE-2021-42574), zero-width, and control chars (NFC-normalized, length-capped) at write
+    **and** output time.
+  - *Ingest limits:* per-payload size cap (10 MB, `CHITTA_MAX_INGEST_BYTES`) in core ingest;
+    token-bucket rate limit on the external `context_ingest` MCP surface.
+  - *ACL red-team probe suite* (`test/security/acl-probe.test.ts`): cross-tenant leakage
+    (CTLR==0), identity-not-query injection invariance, deny-by-default — runs in CI.
+  - `SECURITY.md` expanded with the threat model + the encryption-at-rest posture.
 - **ACL integrity fix (critical):** extracted knowledge-graph entities shared the `nodes`
   table keyspace with principals (users/orgs/groups) and records. Because entity ids are
   slugs of free text written with `INSERT OR REPLACE`, ingesting a document that merely

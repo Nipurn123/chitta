@@ -1,5 +1,6 @@
 import type { ContextBackend } from "../backend"
 import { slug, type ToolModule, type ToolResult } from "./types"
+import { rateLimitIngest, IngestLimitError } from "../../security/limits"
 
 const schema = {
   name: "context_ingest",
@@ -61,6 +62,14 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     relations?: Array<{ from: string; to: string; type: string; confidence?: number }>
     share?: string[]
     org_wide?: boolean
+  }
+  // SECURITY: rate-limit the EXTERNAL ingest surface (size cap is enforced in the core
+  // ingest method). A flood of huge stores can't wedge the server.
+  try {
+    rateLimitIngest(a.content ?? "")
+  } catch (e) {
+    if (e instanceof IngestLimitError) return { content: [{ type: "text", text: e.message }], isError: true }
+    throw e
   }
   // owner is always added by authorizedIngest; `share` widens to named principals/
   // groups; `org_wide` shares with everyone in the org. The authorizer rejects any

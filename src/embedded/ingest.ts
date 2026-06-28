@@ -6,6 +6,8 @@ import type { EmbeddingProvider } from "../provider"
 import type { SqliteStore, Json } from "./sqlite-store"
 import { DeterministicExtractor, stripBoilerplate, slugify, entityId, type KnowledgeExtractor } from "./extract"
 import { CodeExtractor } from "./code-extractor"
+import { guardIngest } from "../security/limits"
+import { sanitizeBody, sanitizeLabel } from "../security/sanitize"
 
 export interface IngestDoc {
   recordId: string
@@ -133,13 +135,19 @@ export class Ingestor {
 
   // --- the document ingestion pipeline ---
   async ingest(doc: IngestDoc): Promise<{ recordId: string; chunks: number; entities: number }> {
+    // SECURITY: enforce size + rate limits on the RAW payload before any work, then strip
+    // hidden/bidi/control chars from the text + record name (Trojan-Source / injection
+    // hardening). `text` is what gets chunked, embedded, and extracted downstream.
+    guardIngest(doc.text)
+    const text = sanitizeBody(doc.text)
+    const recordName = sanitizeLabel(doc.recordName)
     const vid = doc.virtualRecordId ?? doc.recordId
 
     // (1) GRAPH: the record node.
     this.store.addNode(doc.recordId, "records", {
       virtualRecordId: vid,
       orgId: doc.orgId,
-      recordName: doc.recordName,
+      recordName,
       mimeType: doc.mimeType ?? "text/plain",
       connectorId: doc.connectorId ?? "upload",
       connectorName: doc.connectorId ?? "upload",
@@ -164,7 +172,7 @@ export class Ingestor {
     // chunking/extraction so it never becomes a noisy chunk or junk entity. Code is
     // left untouched (a line like "accept" can be real source).
     const isCode = !!CodeExtractor.detectLanguage(doc.recordName)
-    const cleanText = isCode ? doc.text : stripBoilerplate(doc.text)
+    const cleanText = isCode ? text : stripBoilerplate(text)
 
     // (3) VECTORS: chunk → embed → store.
     const chunks = chunkText(cleanText)
@@ -207,7 +215,7 @@ export class Ingestor {
       if (!slug || added.has(slug)) return slug && entityId(slug)
       added.add(slug)
       const id = entityId(slug)
-      this.store.addNode(id, "entities", { label: name.trim(), type: type ?? "ENTITY" })
+      this.store.addNode(id, "entities", { label: sanitizeLabel(name), type: type ?? "ENTITY" })
       this.store.addEdge(recordId, id, "mentions", { recordId })
       return id
     }
@@ -240,7 +248,7 @@ export class Ingestor {
     const { entities, relations } = await extractor.extract(text, { name, language: lang ?? undefined })
     for (const e of entities) {
       const id = entityId(e.id)
-      this.store.addNode(id, "entities", { label: e.label, type: e.type })
+      this.store.addNode(id, "entities", { label: sanitizeLabel(e.label), type: e.type })
       this.store.addEdge(recordId, id, "mentions", { recordId })
     }
     // Store the TYPED predicate as the edge label (calls/defines/imports for code;
