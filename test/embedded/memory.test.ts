@@ -98,6 +98,25 @@ describe("living memory", () => {
     expect(mems.some((m) => m.memory.includes("reports to Dana"))).toBe(false) // dynamic expired
   })
 
+  test("profile synthesis rolls up static + recent facts + related entities (ACL-scoped)", async () => {
+    await ctx.authorizedIngest("alice", {
+      recordId: "p1", orgId: ORG, recordName: "person", text: "Maya born in Pune; Maya works at Acme; Maya knows Rust",
+      relations: [
+        { from: "Maya", to: "Pune", type: "born_in" }, // static
+        { from: "Maya", to: "Acme", type: "works_at" }, // dynamic
+        { from: "Maya", to: "Rust", type: "knows" }, // dynamic, multi-valued
+      ],
+    })
+    const p = (await ctx.buildProfile("Maya", "alice", ORG))!
+    expect(p).not.toBeNull()
+    expect(p.staticFacts.some((f) => f.includes("born in Pune"))).toBe(true)
+    expect(p.recentFacts.some((f) => f.includes("works at Acme"))).toBe(true)
+    expect(p.staticFacts.some((f) => f.includes("Acme"))).toBe(false) // works_at is NOT static
+    expect(p.related.map((r) => r.toLowerCase())).toContain("acme")
+    // ACL: bob (no access to p1, which is private to alice) gets nothing
+    expect(await ctx.buildProfile("Maya", "bob", ORG)).toBeNull()
+  })
+
   test("ACL: a user cannot recall OR forget memories from records they can't see", async () => {
     // alice stores a PRIVATE fact (bob is not a permitted principal)
     await ctx.authorizedIngest("alice", {

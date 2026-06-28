@@ -121,6 +121,7 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 | `context_ingest` | Store text → record node + **permission edges** (ACL) + **vector chunks** + **extracted concept graph** + **atomic memories** |
 | `get_context` | Retrieve ranked, cited, permission-filtered snippets + the **current memory** (latest, contradiction-resolved) |
 | `context_forget` | Forget memories that are no longer true/wanted (soft-delete, within what you may see) |
+| `context_profile` | Synthesize a profile of a person/org/entity (permanent + recent facts + connections) |
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
 | `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
 

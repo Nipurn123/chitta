@@ -10,7 +10,7 @@ import { SqliteVecService } from "./sqlite-vec-service"
 import { LocalHashEmbeddings } from "./local-embeddings"
 import { TransformersEmbeddings, AutoEmbeddings } from "./transformers-embeddings"
 import { Ingestor, type IngestDoc } from "./ingest"
-import { DeterministicExtractor, type KnowledgeExtractor } from "./extract"
+import { DeterministicExtractor, slugify, entityId, type KnowledgeExtractor } from "./extract"
 import { Authorizer } from "./authorizer"
 import { KgqaService } from "./kgqa-service"
 import { GraphQueryService } from "./graph-query"
@@ -29,6 +29,16 @@ export interface RecalledMemory {
   isStatic: boolean
   updatedAt: number
   rootId: string
+}
+
+/** A synthesized, ACL-scoped profile of one subject - the permanent facts, the recent
+ *  (dynamic) facts, and the entities it's most connected to. Supermemory's "user profile",
+ *  but for ANY principal/entity the caller is permitted to see, not just the caller. */
+export interface Profile {
+  subject: string
+  staticFacts: string[]
+  recentFacts: string[]
+  related: string[]
 }
 
 export { SqliteStore } from "./sqlite-store"
@@ -212,6 +222,30 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     }))
   }
 
+  // PROFILE synthesis - roll up everything currently known about one subject into a
+  // compact, structured view: permanent facts (static), recent facts (dynamic, newest
+  // first), and the entities it's most connected to. ACL-scoped (built only from the
+  // caller's accessible memories + graph). Returns null when nothing is known. This is
+  // the Supermemory "user profile" surface, generalized to any permitted entity.
+  async function buildProfile(subject: string, userId: string, orgId: string): Promise<Profile | null> {
+    store.memories.sweep()
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vids = [...new Set(Object.values(accessible))]
+    const rows = store.memories.recall(vids)
+    const eid = entityId(slugify(subject))
+    const prefix = `${eid}|`
+    const mine = rows.filter((r) => r.subject_key.startsWith(prefix))
+    const nb = await graphQuery.neighbors(subject, userId, orgId)
+    const related = (nb?.neighbors ?? []).slice(0, 10).map((n) => n.label)
+    if (mine.length === 0 && related.length === 0) return null
+    const staticFacts = mine.filter((r) => r.is_static).map((r) => r.memory)
+    const recentFacts = mine
+      .filter((r) => !r.is_static)
+      .sort((a, b) => b.updated_at - a.updated_at)
+      .map((r) => r.memory)
+    return { subject: nb?.entity ?? subject, staticFacts, recentFacts, related }
+  }
+
   // Same retrieval, but also returns the pipeline TRACE (for the UI's explainability).
   async function searchTraced(query: string, userId: string, orgId: string) {
     const trace: SearchTrace = { counts: { vector: 0, keyword: 0, graph: 0, fused: 0 }, reranked: false, items: [] }
@@ -280,6 +314,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     recallMemories,
     forgetMemories,
     memoryHistory,
+    buildProfile,
     reindex,
     rebuildGraph,
   }

@@ -9,6 +9,20 @@ semantic versioning once it reaches 1.0.
 ## [0.1.5] - 2026-06-29
 
 ### Added
+- **Profile synthesis (`context_profile`).** Rolls up everything currently known about a
+  person/org/entity into a compact, structured view - **permanent** facts (static), **recent**
+  facts (dynamic, newest first, contradictions already resolved + forgotten excluded), and the
+  entities it's most **connected** to. Supermemory's "user profile", but generalized to ANY
+  principal/entity the caller is permitted to see (not just self) and built only from the
+  caller's accessible memories + graph. `buildProfile()` on the embedded context;
+  `test/embedded/memory.test.ts` covers static/dynamic split + cross-user ACL.
+- **Stronger zero-dependency default embedder (hashing v2).** The offline default is no
+  longer a plain bag-of-words hash: it now also hashes **character n-grams** (morphological
+  overlap - "running"~"run", graceful typo degradation) and **word bigrams** (phrase signal),
+  with signed feature hashing and sublinear term weighting, at 256 dims (was 64). Materially
+  better recall with still zero downloads; real neural embeddings remain a one-flag opt-in
+  (`CONTEXT_EMBEDDINGS=real`). The dim change is handled automatically for existing DBs by the
+  embedder-drift `reconcile()` (detects + reindexes). `test/embedded/local-embeddings.test.ts`.
 - **Living memory - permission-aware atomic memories (the Supermemory-parity layer, but
   ACL-scoped).** A new first-class memory layer on top of the typed graph: ingested typed
   triples are consolidated into **atomic memories** with full version chains, forgetting,

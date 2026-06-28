@@ -57,6 +57,9 @@ export interface ContextBackend {
   /** Forget memories matching a description (within the caller's accessible set).
    *  Soft-delete; returns the memory texts that were forgotten. */
   forget?: (q: string, reason?: string) => Promise<string[]>
+  /** Synthesized, ACL-scoped profile of a subject: permanent facts, recent facts, and
+   *  most-connected entities. Null when nothing is known about it. */
+  profile?: (subject: string) => Promise<{ subject: string; staticFacts: string[]; recentFacts: string[]; related: string[] } | null>
   ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
@@ -133,6 +136,7 @@ export function resolveBackend(): ContextBackend {
       return mems.map((m) => ({ memory: m.memory, version: m.version, isStatic: m.isStatic }))
     },
     forget: (q, reason) => ctx.forgetMemories(q, ctx.userId, ctx.orgId, reason),
+    profile: (subject) => ctx.buildProfile(subject, ctx.userId, ctx.orgId),
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })
