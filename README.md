@@ -82,6 +82,29 @@ the vector index is touched. Full walkthrough: [examples/permission-aware-retrie
 **7.4× fewer tokens** than dumping the whole corpus into context (more as the corpus
 grows) - with **zero cross-user leak**. Reproducible: [examples/token-reduction](examples/token-reduction/).
 
+## Install
+
+One command wires Chitta into your AI tools - as an **MCP server** (everywhere) and a
+**Skill** (where supported):
+
+```bash
+npx @100xprompt/chitta install                 # auto-detect installed tools
+npx @100xprompt/chitta install --all           # every supported tool
+npx @100xprompt/chitta install --platform cursor,claude-code
+npx @100xprompt/chitta install --print         # just print the MCP config to paste anywhere
+```
+
+Options: `--project` (write project-scoped config instead of global) · `--user-id <id> --org-id <id>`
+(bake identity into the config) · `--list` (show all tools) · `uninstall`.
+
+**Supported tools (15):** Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Windsurf,
+Zed, Cline, Roo Code, Codex CLI, Gemini CLI, opencode, Kiro, Amp, Factory Droid, Kilo Code.
+Skill (not just MCP) is installed for the ones that support it (Claude Code, Cursor, Gemini,
+opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and paste.
+
+> Distributed as a single self-contained binary via npm (`npx`, no Bun required on the user's
+> machine). See [tools/build-binaries.ts](tools/build-binaries.ts) for the release pipeline.
+
 ## Tools exposed over MCP
 
 | Tool | Does |

@@ -43,7 +43,7 @@ async function main() {
     }
     case "ingest": {
       const out = await ctx.ingestor.ingest({
-        recordId: arg("--id")!,
+        recordId: arg("--id") ?? `rec-${Date.now().toString(36)}`,
         orgId: arg("--org", "org1")!,
         recordName: arg("--name", "Untitled")!,
         text: arg("--text") ?? (arg("--file") ? await Bun.file(arg("--file")!).text() : ""),

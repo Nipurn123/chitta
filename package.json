@@ -4,13 +4,15 @@
   "description": "Permission-aware knowledge-graph + vector memory, exposed as an MCP server. Local-embedded or central-office backend.",
   "type": "module",
   "bin": {
-    "chitta": "./src/mcp/server.ts"
+    "chitta": "./src/bin.ts"
   },
   "scripts": {
-    "start": "bun run src/mcp/server.ts",
+    "start": "bun run src/bin.ts",
     "test": "bun test test/",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/mcp/server.ts --compile --outfile dist/chitta",
+    "build": "bun build src/bin.ts --compile --outfile dist/chitta",
+    "build:dist": "bun run tools/build-binaries.ts",
+    "install:tools": "bun run src/bin.ts install",
     "cli": "bun run src/embedded/cli.ts"
   },
   "dependencies": {

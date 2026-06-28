@@ -18,6 +18,13 @@ semantic versioning once it reaches 1.0.
   principals").
 
 ### Added
+- **`chitta install` - universal connectors.** One command wires Chitta into 15 AI tools as
+  an MCP server (everywhere) and a Skill (where supported): Claude Code, Claude Desktop,
+  Cursor, VS Code/Copilot, Windsurf, Zed, Cline, Roo, Codex, Gemini CLI, opencode, Kiro, Amp,
+  Factory Droid, Kilo. Per-format writers merge idempotently into existing config; `--print`
+  covers any other MCP client. New `src/bin.ts` dispatcher (server / install / cli),
+  `src/install/*`, `assets/skill/SKILL.md`. npx distribution via a Node shim + per-platform
+  bun-compiled binaries (`npm/shim.cjs`, `tools/build-binaries.ts`).
 - `ARCHITECTURE.md` - pipeline diagram, module-responsibility tables, the security
   invariant, and an "Adding a new backend" guide.
 - `examples/permission-aware-retrieval/` - a complete, runnable demo of two users sharing
