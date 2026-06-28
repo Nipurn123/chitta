@@ -1,0 +1,171 @@
+// Embedded context stack: one SQLite file, in-process embeddings, zero servers.
+// Wires the same RetrievalService (the moat) over embedded adapters - this is the
+// single-binary path. `bun build --compile` over a CLI that calls this yields one
+// self-contained executable.
+
+import { RetrievalService } from "../retrieval"
+import { SqliteStore } from "./sqlite-store"
+import { SqliteGraphProvider } from "./sqlite-graph-provider"
+import { SqliteVecService } from "./sqlite-vec-service"
+import { LocalHashEmbeddings } from "./local-embeddings"
+import { Ingestor, type IngestDoc } from "./ingest"
+import { DeterministicExtractor, type KnowledgeExtractor } from "./extract"
+import { Authorizer } from "./authorizer"
+import { KgqaService } from "./kgqa-service"
+import { GraphQueryService } from "./graph-query"
+import type { Reranker } from "./reranker"
+import type { LlmExtractor } from "./llm-extractor"
+import type { EmbeddingProvider } from "../provider"
+import type { RetrievalResponse } from "../types"
+import { hybridSearch } from "./retrieval/hybrid-retriever"
+import type { SearchTrace } from "./retrieval/trace"
+
+export { SqliteStore } from "./sqlite-store"
+export { SqliteGraphProvider } from "./sqlite-graph-provider"
+export { SqliteVecService } from "./sqlite-vec-service"
+export { LocalHashEmbeddings } from "./local-embeddings"
+export { TransformersEmbeddings } from "./transformers-embeddings"
+export { Ingestor, chunkText, type IngestDoc } from "./ingest"
+export { DeterministicExtractor, type KnowledgeExtractor } from "./extract"
+export { LlmExtractor, HybridExtractor } from "./llm-extractor"
+export { Authorizer, AuthorizationError, type Role } from "./authorizer"
+
+export interface EmbeddedOptions {
+  path?: string
+  collectionName?: string
+  embeddings?: EmbeddingProvider
+  extractor?: KnowledgeExtractor
+  llm?: LlmExtractor // enables LLM-based KGQA intent parsing
+  reranker?: Reranker // optional cross-encoder final stage (highest-precision reorder)
+  log?: { info: (m: string) => void; debug: (m: string) => void; error: (m: string) => void }
+}
+
+// Retrieval trace - how a query flowed through the pipeline, for the UI's "how it
+// retrieved" panel. Defined in retrieval/trace.ts; re-exported here as part of the
+// public API.
+export type { SearchTrace } from "./retrieval/trace"
+
+export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
+  const store = new SqliteStore(opts.path ?? ":memory:")
+  const graph = new SqliteGraphProvider(store)
+  const vector = new SqliteVecService(store)
+  const embeddings = opts.embeddings ?? new LocalHashEmbeddings()
+  const extractor = opts.extractor ?? new DeterministicExtractor()
+  const retrieval = new RetrievalService({
+    graph,
+    vector,
+    embeddings,
+    collectionName: opts.collectionName ?? "records",
+    log: opts.log,
+  })
+  const ingestor = new Ingestor(store, embeddings, extractor)
+  const authorizer = new Authorizer(store)
+  const kgqa = new KgqaService(graph, store, embeddings, opts.llm)
+  const graphQuery = new GraphQueryService(graph)
+  const reranker = opts.reranker // optional cross-encoder final stage
+
+  // Exact-answer first: try to answer the question precisely from the typed graph;
+  // returns null when it can't (caller then falls back to ranked retrieval).
+  async function ask(question: string, userId: string, orgId: string) {
+    return kgqa.answer(question, userId, orgId)
+  }
+
+  // Authorized write path: checks the acting user MAY create + may grant the
+  // requested sharing, stamps ownership, then ingests. Throws AuthorizationError.
+  async function authorizedIngest(actingUserId: string, doc: IngestDoc) {
+    authorizer.assertCanCreate(actingUserId, doc.orgId, doc.permittedPrincipals ?? [], doc.shareWithOrg)
+    const principals = [...new Set([...(doc.permittedPrincipals ?? []), actingUserId])] // owner can always read
+    return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals })
+  }
+
+  // Authorized delete: only the owner or an admin may remove a record (+ its
+  // edges, chunks, and ANN rows).
+  function deleteRecord(actingUserId: string, recordId: string): void {
+    authorizer.assertCanModify(actingUserId, recordId)
+    const vids = store.db.query("SELECT json_extract(data,'$.virtualRecordId') v FROM nodes WHERE id = ?").all(recordId) as Array<{ v: string }>
+    store.db.query("DELETE FROM nodes WHERE id = ?").run(recordId)
+    store.db.query("DELETE FROM edges WHERE src = ? OR dst = ?").run(recordId, recordId)
+    store.db.query("DELETE FROM chunks WHERE point_id LIKE ?").run(`${recordId}#%`)
+    for (const { v } of vids) if (v) store.db.query("DELETE FROM chunks WHERE virtual_record_id = ?").run(v)
+  }
+
+  // HYBRID retrieval - three complementary signals fused with Reciprocal Rank Fusion
+  // (the 2026 production default), then re-ranked. Signals:
+  //   • DENSE  (vector + ACL) - semantic similarity (paraphrase, meaning).
+  //   • SPARSE (BM25 / FTS5)  - exact tokens dense misses (acronyms "SAP", "£230M").
+  //   • GRAPH  (GraphRAG)     - chunks reachable through related concepts.
+  // RRF score = Σ 1/(k + rank) across the lists a chunk appears in (k=60), so a chunk
+  // strong in ANY signal surfaces, and one strong in several rises to the top - with no
+  // score-scale calibration between cosine and BM25. Then: personal boost (ownership),
+  // memory decay/salience, cross-encoder rerank, passage extraction, diversity cap (MMR).
+  // The pipeline lives in ./retrieval/* - this is a thin wrapper that threads the
+  // shared embedded state into the orchestrator.
+  async function searchWithGraph(query: string, userId: string, orgId: string, trace?: SearchTrace): Promise<RetrievalResponse> {
+    return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace)
+  }
+
+  // Same retrieval, but also returns the pipeline TRACE (for the UI's explainability).
+  async function searchTraced(query: string, userId: string, orgId: string) {
+    const trace: SearchTrace = { counts: { vector: 0, keyword: 0, graph: 0, fused: 0 }, reranked: false, items: [] }
+    const response = await searchWithGraph(query, userId, orgId, trace)
+    return { response, trace }
+  }
+
+  // Re-embed every stored chunk with the current embedder and rebuild the ANN
+  // index. Needed when switching embedders (e.g. hash → transformers, different dim).
+  async function reindex(): Promise<number> {
+    store.resetVec()
+    store.resetFts()
+    const rows = store.db.query("SELECT point_id, virtual_record_id, org_id, content FROM chunks").all() as Array<{
+      point_id: string
+      virtual_record_id: string
+      org_id: string
+      content: string
+    }>
+    for (const r of rows) {
+      const emb = await embeddings.embedDense(r.content)
+      store.addChunk(r.point_id, r.virtual_record_id, r.org_id, r.content, emb)
+    }
+    return rows.length
+  }
+
+  // Re-extract the knowledge graph for EVERY existing record (e.g. after switching
+  // to an LLM extractor, or for data ingested before extraction existed). Clears
+  // the concept layer (entities + mentions + relates_to), keeps records/ACL/vectors.
+  async function rebuildGraph(): Promise<{ records: number; entities: number }> {
+    store.db.exec("DELETE FROM nodes WHERE coll = 'entities'")
+    store.db.exec("DELETE FROM edges WHERE label IN ('mentions','relates_to')")
+    const records = store.db.query("SELECT id, data FROM nodes WHERE coll = 'records'").all() as Array<{ id: string; data: string }>
+    let entities = 0
+    for (const rec of records) {
+      const chunks = store.db
+        .query("SELECT content FROM chunks WHERE point_id LIKE ? ORDER BY rowid")
+        .all(`${rec.id}#%`) as Array<{ content: string }>
+      const text = chunks.map((c) => c.content).join("\n\n")
+      const name = (JSON.parse(rec.data) as { recordName?: string }).recordName
+      if (text) entities += await ingestor.writeGraphFor(rec.id, text, name)
+    }
+    return { records: records.length, entities }
+  }
+
+  return {
+    store,
+    graph,
+    vector,
+    embeddings,
+    retrieval,
+    ingestor,
+    authorizer,
+    kgqa,
+    graphQuery,
+    ask,
+    authorizedIngest,
+    deleteRecord,
+    searchWithGraph,
+    searchTraced,
+    reindex,
+    rebuildGraph,
+  }
+}
+
+export type EmbeddedContext = ReturnType<typeof buildEmbeddedContext>

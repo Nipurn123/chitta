@@ -1,0 +1,29 @@
+{
+  "name": "@100xprompt/chitta",
+  "version": "0.1.0",
+  "description": "Permission-aware knowledge-graph + vector memory, exposed as an MCP server. Local-embedded or central-office backend.",
+  "type": "module",
+  "bin": {
+    "chitta": "./src/mcp/server.ts"
+  },
+  "scripts": {
+    "start": "bun run src/mcp/server.ts",
+    "test": "bun test test/",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/mcp/server.ts --compile --outfile dist/chitta",
+    "cli": "bun run src/embedded/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "sqlite-vec": "^0.1.9",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "0.24.7"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

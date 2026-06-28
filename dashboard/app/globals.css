@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #08090b;
+  --panel: #0e1014;
+  --panel-2: #121419;
+  --line: #1c1f26;
+  --line-2: #262a33;
+  --ink: #e8eaf0;
+  --muted: #878d9a;
+  --faint: #5a6070;
+  --accent: #7c9cff;
+  --good: #86efac;
+  --warn: #fbbf77;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* radial backdrop glow */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(1100px 700px at 72% -10%, rgba(124, 156, 255, 0.07), transparent 60%),
+    radial-gradient(900px 600px at 8% 110%, rgba(94, 234, 212, 0.05), transparent 55%);
+}
+
+.scrollbar::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.scrollbar::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 5px;
+}
+.scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-blur {
+  background: rgba(14, 16, 20, 0.78);
+  backdrop-filter: blur(14px);
+}
+
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+}
+.animate-grow {
+  transform-origin: left;
+  animation: grow 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes fadeup {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.animate-fadeup {
+  animation: fadeup 0.4s ease both;
+}
