@@ -59,16 +59,22 @@ zero-width, and control characters at write time **and** re-stripped at output. 
 
 ### Encryption at rest
 
-The local SQLite file is **not encrypted** today; the supported at-rest baseline is OS disk
-encryption (FileVault / LUKS / BitLocker) — what comparable local-first memory tools
-(mem0, Zep, Obsidian) rely on, and it preserves full-text + vector search.
+**Opt-in transparent encryption at rest is supported.** Set `CONTEXT_DB_KEY` and Chitta opens
+the store via libSQL with whole-file AES-256 encryption — the `.db` file is unreadable
+without the key (verified: the SQLite header and all content are ciphertext on disk; see
+`test/security/encryption.test.ts`). The full knowledge graph, ACL, FTS, and vector search
+keep working under encryption.
 
-Transparent whole-file encryption was evaluated (libSQL's `encryptionKey`) and is **blocked
-upstream**: encryption + FTS5 work, but inserting vectors into a `vec0` table via bound
-parameters — Chitta's exact write path — fails (and panics) under libSQL, which would
-disable the ANN vector index. We'll revisit when that's fixed or another encrypted-SQLite
-build supports `vec0`. Optional field-level AES-256-GCM (encrypting `chunks.content` behind
-a `CONTEXT_DB_KEY`, at the cost of full-text search on that column) is available on request.
+- **Trade-off:** the encrypted (libSQL) driver can't load the `sqlite-vec` extension
+  (`loadExtension` is unimplemented upstream), so encrypted mode uses **brute-force cosine**
+  vector search instead of the ANN index — correctness identical, just no ANN speedup
+  (fine up to mid-scale; reindex/migrate to the central backend for very large encrypted
+  corpora). `libsql` is an optional dependency installed automatically; if it's missing and
+  `CONTEXT_DB_KEY` is set, Chitta errors clearly instead of silently storing plaintext.
+- **Default (no key):** the store is plain `bun:sqlite` with the ANN index — unchanged. The
+  recommended baseline without a key is OS disk encryption (FileVault / LUKS / BitLocker).
+- **Key management:** supply `CONTEXT_DB_KEY` via the environment (or your MCP client's
+  server `env` block); never commit it. A lost key means an unrecoverable database.
 
 In central mode, backend traffic should use TLS (`https://` URLs) with authenticated
 Arango/Qdrant/embedding endpoints.

@@ -13,6 +13,7 @@
 // behavior. The public surface of SqliteStore is preserved exactly.
 
 import { Database } from "bun:sqlite"
+import { openDatabase, isEncrypted } from "./store/db"
 import { migrate, tryEnableExtensions, tryLoadVec } from "./store/schema"
 import * as graph from "./store/nodes-edges"
 import * as fts from "./store/fts"
@@ -28,13 +29,22 @@ export class SqliteStore {
   private readonly chunks: ChunkRepo
 
   constructor(path = ":memory:") {
+    const encrypted = isEncrypted()
     tryEnableExtensions()
-    this.db = new Database(path)
-    this.db.exec("PRAGMA journal_mode = WAL;")
+    this.db = openDatabase(path) // bun:sqlite by default; encrypted libSQL if CONTEXT_DB_KEY set
+    try {
+      this.db.exec("PRAGMA journal_mode = WAL;")
+    } catch {
+      /* WAL may be unsupported under the encrypted driver — non-fatal */
+    }
     migrate(this.db)
-    this.vecEnabled = tryLoadVec(this.db)
+    // The encrypted (libSQL) driver can't load the sqlite-vec extension (loadExtension is
+    // unimplemented and panics across the native boundary), so encrypted mode uses the
+    // built-in brute-force cosine path instead of the ANN index — correctness preserved,
+    // ANN speedup traded for encryption. FTS5 is built in and works either way.
+    this.vecEnabled = encrypted ? false : tryLoadVec(this.db)
     this.ftsEnabled = fts.tryEnableFts(this.db)
-    this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled)
+    this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, encrypted)
   }
 
   // ── Graph: nodes & edges ────────────────────────────────────────────────

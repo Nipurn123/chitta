@@ -7,6 +7,18 @@
 import { Database } from "bun:sqlite"
 import { indexChunkFts } from "./fts"
 
+// Build a JSON-array literal for a vec0 embedding, asserting every value is a finite
+// number. Used only on the libSQL/encrypted path (which rejects bound-param vec inserts).
+// Because the output contains only digits, '.', '-', 'e', and ',', it carries no SQL
+// injection surface.
+function vecLiteral(embedding: number[]): string {
+  const parts = embedding.map((x) => {
+    if (typeof x !== "number" || !Number.isFinite(x)) throw new Error("invalid embedding value (non-finite)")
+    return x
+  })
+  return `[${parts.join(",")}]`
+}
+
 export class ChunkRepo {
   private vecDim = 0
 
@@ -14,6 +26,9 @@ export class ChunkRepo {
     private readonly db: Database,
     private readonly vecEnabled: boolean,
     private readonly ftsEnabled: boolean,
+    // libSQL (encrypted mode) panics on BOUND-param vec0 inserts, so on that driver we
+    // build a validated literal insert instead (numbers only → no injection surface).
+    private readonly encrypted = false,
   ) {}
 
   // The vec0 ANN table is created lazily once we know the embedding dimension.
@@ -30,8 +45,17 @@ export class ChunkRepo {
     const rowid = Number(res.lastInsertRowid)
     if (this.vecEnabled) {
       this.ensureVec(embedding.length)
-      this.db.query("DELETE FROM vec_chunks WHERE rowid = ?").run(rowid)
-      this.db.query("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)").run(rowid, JSON.stringify(embedding))
+      if (this.encrypted) {
+        // libSQL path: validated literal SQL (rowid is our integer; embedding is a
+        // float array we produced — every element checked finite → safe to inline).
+        const rid = Math.trunc(rowid)
+        const lit = vecLiteral(embedding)
+        this.db.exec(`DELETE FROM vec_chunks WHERE rowid = ${rid}`)
+        this.db.exec(`INSERT INTO vec_chunks(rowid, embedding) VALUES (${rid}, '${lit}')`)
+      } else {
+        this.db.query("DELETE FROM vec_chunks WHERE rowid = ?").run(rowid)
+        this.db.query("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)").run(rowid, JSON.stringify(embedding))
+      }
     }
     if (this.ftsEnabled) {
       indexChunkFts(this.db, rowid, content)

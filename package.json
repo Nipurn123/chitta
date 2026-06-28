@@ -17,9 +17,19 @@
     "LICENSE"
   ],
   "keywords": [
-    "mcp", "mcp-server", "model-context-protocol", "ai-memory", "agent-memory",
-    "knowledge-graph", "graph-rag", "rag", "vector-database", "permission-aware",
-    "rbac", "access-control", "ai-agents"
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "ai-memory",
+    "agent-memory",
+    "knowledge-graph",
+    "graph-rag",
+    "rag",
+    "vector-database",
+    "permission-aware",
+    "rbac",
+    "access-control",
+    "ai-agents"
   ],
   "publishConfig": {
     "access": "public"
@@ -39,7 +49,8 @@
     "web-tree-sitter": "0.24.7"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^4.2.0"
+    "@huggingface/transformers": "^4.2.0",
+    "libsql": "^0.5.29"
   },
   "devDependencies": {
     "@types/bun": "latest",

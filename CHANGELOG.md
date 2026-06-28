@@ -31,6 +31,14 @@ semantic versioning once it reaches 1.0.
   principals").
 
 ### Added
+- **Encryption at rest (opt-in, transparent).** Set `CONTEXT_DB_KEY` and the store opens via
+  libSQL with whole-file AES-256 encryption — the `.db` is ciphertext on disk; graph, ACL,
+  FTS, and vector search keep working. Default (no key) stays plain `bun:sqlite` with the ANN
+  index, untouched. Trade-off: the encrypted driver can't load `sqlite-vec`, so encrypted
+  mode uses brute-force cosine (no ANN speedup). New `src/embedded/store/db.ts` driver
+  abstraction; `libsql` optional dependency; `test/security/encryption.test.ts` proves
+  plaintext never hits disk. (Required a one-line validated-literal `vec0` write to dodge a
+  libSQL bound-param panic — confined to the encrypted path.)
 - **Real semantic embeddings by default.** `buildEmbeddedContext` now selects embeddings via
   `CONTEXT_EMBEDDINGS` (default `auto`): real transformers.js embeddings (`bge-*`) when
   loadable, automatic fallback to the offline hashing embedder otherwise; `real`/`hash` force
