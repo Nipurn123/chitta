@@ -45,6 +45,21 @@ describe("graph-query", () => {
     expect(labels).toEqual(["globex", "nyc"]) // partners_with (out) + located_in (out)
   })
 
+  test("neighborsForQuery resolves the entity NAMED in a free-text question (full neighborhood)", async () => {
+    const { gq } = await fixture()
+    // a natural-language breadth query, not an exact entity name - this is what get_context passes
+    const r = await gq.neighborsForQuery("tell me everything about acme please", "alice", "org1")
+    expect(r).not.toBeNull()
+    expect(r!.entity).toBe("acme")
+    // same complete edge set as neighbors("acme") - the whole point: no completeness loss
+    expect(r!.neighbors.map((n) => n.label).sort()).toEqual(["globex", "nyc"])
+  })
+
+  test("neighborsForQuery returns null when no known entity is named", async () => {
+    const { gq } = await fixture()
+    expect(await gq.neighborsForQuery("what is the weather today", "alice", "org1")).toBeNull()
+  })
+
   test("pathBetween finds the relation chain across hops", async () => {
     const { gq } = await fixture()
     const r = await gq.pathBetween("acme", "initech", "alice", "org1")

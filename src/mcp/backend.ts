@@ -45,6 +45,10 @@ export interface ContextBackend {
   query(q: string, limit?: number): Promise<RetrievalResponse>
   /** KGQA: exact answer from the typed graph, or null to fall back to ranked. */
   ask?: (q: string) => Promise<ExactAnswer | null>
+  /** Full typed-graph neighborhood of the entity named in a free-text query - the
+   *  complete edge set (same as context_relate), as readable fact lines. Null when no
+   *  entity is named. Lets get_context reach graph-query completeness for breadth recall. */
+  relatedFacts?: (q: string, limit?: number) => Promise<{ entity: string; facts: string[] } | null>
   ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
@@ -104,6 +108,17 @@ export function resolveBackend(): ContextBackend {
     // reconcile() heals embedder/dim drift once before any vector op (ingest already does)
     query: async (q, limit) => (await ctx.reconcile(), ctx.searchWithGraph(q, ctx.userId, ctx.orgId, undefined, limit)), // vector + ACL + GraphRAG
     ask: async (q) => (await ctx.reconcile(), ctx.ask(q, ctx.userId, ctx.orgId)), // KGQA: exact answer from the typed graph
+    // Full typed neighborhood of the entity named in the query, as fact lines. This is
+    // what closes get_context's completeness gap vs context_relate for breadth recall.
+    relatedFacts: async (q, limit) => {
+      const n = await ctx.graphQuery.neighborsForQuery(q, ctx.userId, ctx.orgId, limit)
+      if (!n || n.neighbors.length === 0) return null
+      const facts = n.neighbors.map((nb) => {
+        const rel = nb.relation.replace(/_/g, " ")
+        return nb.direction === "out" ? `${n.entity} ${rel} ${nb.label}` : `${nb.label} ${rel} ${n.entity}`
+      })
+      return { entity: n.entity, facts }
+    },
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })

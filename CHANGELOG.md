@@ -6,7 +6,20 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-28
+
 ### Fixed
+- **`get_context` breadth recall topped out at ~73% (missed graph-neighbor facts).** Even
+  after the additive-KGQA fix, ranked retrieval is inherently lossy (topk-capped,
+  similarity-ordered), so typed-graph neighbors that aren't lexically/semantically close to
+  the query (e.g. for "everything about Elon Musk": *X Corp, DOGE, Grimes, Vivian Wilson*)
+  never surfaced — `context_relate(neighbors)` returned them but `get_context` didn't. Now
+  when a query **names a known entity**, `get_context` folds in that entity's **complete
+  typed neighborhood** (the same full edge set as `context_relate`) as an additive "Related
+  facts about X" section. Gated to breadth queries or when KGQA found no precise answer, so a
+  narrow factual question stays focused. New `GraphQueryService.neighborsForQuery`
+  (free-text → named entity → full neighborhood) + `backend.relatedFacts`. Regressions:
+  `test/embedded/graph-query.test.ts`, `test/mcp/get-context.test.ts`.
 - **`bunx` launch failure / "server disconnected" + 2.4 GB install.** `@huggingface/transformers`
   (~2.4 GB) and `libsql` were `optionalDependencies`, so `bunx @100xprompt/chitta` tried to
   download them on every launch — failing on tight disks and bloating installs. They're now

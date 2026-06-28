@@ -47,17 +47,32 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     }
   }
 
-  // (2) Full ranked recall (vector + BM25 + GraphRAG), breadth-aware.
+  // (2) Graph-complete recall: when the query NAMES an entity, fold in that entity's
+  // full typed neighborhood (every relation, like context_relate). Ranked retrieval is
+  // inherently lossy (topk-capped, similarity-ordered), so it misses graph neighbors that
+  // aren't lexically/semantically close to the query — this is what made breadth recall
+  // ("everything about X") top out at ~73%. The typed graph is complete, so adding it
+  // closes the gap. Gated to breadth queries or when KGQA found no precise answer, so a
+  // narrow factual question stays focused. (For an exhaustive map, context_graph remains.)
+  let graphFacts = ""
+  if (backend.relatedFacts && (BREADTH.test(query) || !highlight)) {
+    const rel = await backend.relatedFacts(query, limit && limit > 0 ? limit : 40)
+    if (rel && rel.facts.length) {
+      const body = rel.facts.map((f) => `• ${sanitizeText(f)}`).join("\n")
+      graphFacts = `Related facts about ${sanitizeText(rel.entity)} (from the knowledge graph):\n${body}`
+    }
+  }
+
+  // (3) Full ranked recall (vector + BM25 + GraphRAG), breadth-aware.
   const res = await backend.query(query, limit)
   const recalled =
     res.status === RetrievalStatus.SUCCESS && res.searchResults.length
       ? renderRecalled(res.searchResults.map((r) => ({ content: r.content, source: r.metadata.recordName ?? "untitled" })))
       : ""
 
+  const sections = [highlight, graphFacts, recalled].filter(Boolean)
   let text: string
-  if (highlight && recalled) text = `${highlight}\n\n---\n\n${recalled}`
-  else if (highlight) text = highlight
-  else if (recalled) text = recalled
+  if (sections.length) text = sections.join("\n\n---\n\n")
   else
     text =
       res.status === RetrievalStatus.ACCESSIBLE_RECORDS_NOT_FOUND

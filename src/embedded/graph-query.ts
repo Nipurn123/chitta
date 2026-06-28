@@ -58,6 +58,35 @@ export class GraphQueryService {
     return neighborsOf(ids, byId, adj, relation)
   }
 
+  /** Entity-centric recall for a FREE-TEXT query ("everything about Elon Musk"):
+   *  resolve the entity NAMED in the question (its label occurs in the text), anchor on
+   *  the most specific match plus its aliases, and return the full typed neighborhood -
+   *  the same 100%-complete edge set as neighbors(), but driven by natural language
+   *  instead of an exact entity name. Powers get_context's graph-facts section, which is
+   *  what closes the gap between ranked retrieval (lossy) and the typed graph (complete). */
+  async neighborsForQuery(query: string, userId: string, orgId: string, limit = 40): Promise<NeighborResult | null> {
+    const { entities, byId, adj } = await this.scope(userId, orgId)
+    if (entities.length === 0) return null
+    const q = query.toLowerCase()
+    // entities literally named in the query, most specific (longest label) first
+    const named = entities
+      .filter((e) => e.label.length >= 3 && q.includes(e.label.toLowerCase()))
+      .sort((a, b) => b.label.length - a.label.length)
+    if (named.length === 0) return null
+    // anchor on the most specific named entity + any alias/fragment of it that also
+    // matched (e.g. "Elon Musk" + "Musk"), so fragmented references are unified.
+    const topL = named[0].label.toLowerCase()
+    const ids = named
+      .filter((e) => {
+        const l = e.label.toLowerCase()
+        return l === topL || topL.includes(l) || l.includes(topL)
+      })
+      .map((e) => e.id)
+    const result = neighborsOf([...new Set(ids)], byId, adj)
+    result.neighbors = result.neighbors.slice(0, limit)
+    return result
+  }
+
   /** Shortest relation chain between two entities (undirected BFS, hub-avoiding).
    *  Answers "how are X and Y related?" - the single most useful graph query. */
   async pathBetween(a: string, b: string, userId: string, orgId: string): Promise<PathResult> {
