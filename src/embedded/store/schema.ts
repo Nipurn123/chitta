@@ -58,6 +58,27 @@ export function migrate(db: Database): void {
   const ecols = (db.query("PRAGMA table_info(edges)").all() as Array<{ name: string }>).map((c) => c.name)
   if (!ecols.includes("confidence")) db.exec("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
   migrateMemories(db)
+  migrateAudit(db)
+}
+
+// The AUDIT table - append-only, hash-chained tamper-evident access log (see audit.ts).
+// Inherits encryption-at-rest with the rest of the store.
+export function migrateAudit(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      org TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT NOT NULL DEFAULT '',
+      ok INTEGER NOT NULL DEFAULT 1,
+      detail TEXT NOT NULL DEFAULT '',
+      prev_hash TEXT NOT NULL,
+      hash TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit(actor, ts);
+  `)
 }
 
 // The MEMORIES table - the living-memory layer (Supermemory-style atomic memories,

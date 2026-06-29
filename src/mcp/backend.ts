@@ -79,6 +79,9 @@ export interface ContextBackend {
   }
   /** Live counts for the about/discovery endpoint. */
   stats?: () => Promise<BackendStats>
+  /** Append a tamper-evident audit entry (who/what/when). Present only when auditing is
+   *  enabled (CHITTA_AUDIT) and the backend supports it (local mode). Never throws. */
+  audit?: (e: { action: string; target: string; ok: boolean; detail?: string }) => void
 }
 
 export function resolveBackend(): ContextBackend {
@@ -165,5 +168,19 @@ export function resolveBackend(): ContextBackend {
       relations: count("SELECT count(*) c FROM edges WHERE label = 'relates_to'"),
       memories: ctx.store.memories.counts(),
     }),
+    // Tamper-evident audit log, opt-in via CHITTA_AUDIT (off by default → personal use
+    // stays zero-overhead and private). Failures never affect the tool call.
+    audit: /^(1|true|on)$/i.test(process.env.CHITTA_AUDIT ?? "")
+      ? (e) => {
+          try {
+            ctx.store.audit.record({
+              ts: Date.now(), actor: ctx.userId, org: ctx.orgId,
+              action: e.action, target: e.target, ok: e.ok ? 1 : 0, detail: e.detail ?? "",
+            })
+          } catch {
+            /* never let auditing break a request */
+          }
+        }
+      : undefined,
   }
 }

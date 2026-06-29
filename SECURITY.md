@@ -31,6 +31,8 @@ produces the candidate set.
 | ACL integrity | Ingested content can never alter the permission graph (see below) |
 | Memory-poisoning defense | Recalled content is returned as marked untrusted **data**, not instructions (see below) |
 | Ingest hardening | Hidden/bidi/control chars stripped; size + rate limits on the write surface |
+| Encryption at rest | Opt-in transparent AES-256 (`CONTEXT_DB_KEY`), rotatable with `chitta rekey` |
+| Audit trail | Opt-in append-only, hash-chained, tamper-evident log of who-did-what-when |
 
 ### ACL assurance — red-team probe suite (CTLR == 0)
 
@@ -75,9 +77,35 @@ keep working under encryption.
   recommended baseline without a key is OS disk encryption (FileVault / LUKS / BitLocker).
 - **Key management:** supply `CONTEXT_DB_KEY` via the environment (or your MCP client's
   server `env` block); never commit it. A lost key means an unrecoverable database.
+- **Key rotation:** `chitta rekey --new-key <key>` re-encrypts the whole store under a new
+  key (set `CONTEXT_DB_KEY` to the *current* key first; pass `--new-key ''` to decrypt back
+  to plaintext). It does a logical re-encryption copy and an atomic file swap, keeping a
+  timestamped `.bak-*` of the original; the audit hash-chain, version chains, validity
+  intervals, and provenance are all preserved. Verified by `test/security/rekey.test.ts`.
 
 In central mode, backend traffic should use TLS (`https://` URLs) with authenticated
 Arango/Qdrant/embedding endpoints.
+
+### Audit logging (tamper-evident)
+
+Opt-in via `CHITTA_AUDIT=1`. Every tool call (ingest / recall / forget / profile / graph)
+is appended to an `audit` table with **who** (`CONTEXT_USER_ID` + org), **what** (the tool
++ a redacted summary), **when**, and whether it succeeded or was **denied**. Two properties
+make it suitable for compliance (healthcare / finance / government):
+
+- **Tamper-evident:** each entry is hash-chained to the previous one
+  (`hash = sha256(prev_hash + entry)`), so any later edit, deletion, or reordering breaks
+  the chain. `chitta audit --verify` walks the chain and reports the first broken id; a
+  passing verify means the trail has not been rewritten, even by someone with DB write
+  access. Covered by `test/security/audit.test.ts`.
+- **Privacy-preserving:** the raw stored *content* is never written to the trail. Ingests
+  record only the title and the payload **size** in bytes; reads record the query/subject
+  (the intent), not results. So the audit log itself doesn't become a second copy of
+  sensitive data. Inspect with `chitta audit [--tail N]`. When the store is encrypted, the
+  audit table is encrypted with it.
+
+Off by default so personal use stays zero-overhead and private; turn it on for shared/
+multi-user or regulated deployments.
 
 ### ACL integrity (keyspace isolation)
 
@@ -94,6 +122,26 @@ principals").
 When pointed at external backends (ArangoDB, Qdrant, an embedding service), all calls go
 over HTTP adapters with no SDK surface. Treat backend URLs and credentials as secrets and
 supply them via environment variables, never in committed config.
+
+## Deployment hardening (production checklist)
+
+Chitta's *architectural* controls (ACL gate, per-edge provenance, encryption, audit) live
+in the code. A few controls belong at the **deployment/infra layer** by design — they are
+not application bugs, and putting them in a local stdio MCP server would be the wrong place:
+
+- **Encryption in transit.** Local mode is stdio (no network — N/A). Central-office mode
+  talks to Arango/Qdrant/embedding endpoints: use `https://` URLs and terminate TLS at a
+  reverse proxy (nginx/Caddy). If you expose any HTTP surface, put it behind that proxy.
+- **Rate limiting.** The ingest surface is already rate-limited + size-capped in-process
+  (`src/security/limits.ts`). For an HTTP deployment, add per-IP/per-token limits at the
+  proxy for defense-in-depth.
+- **Network allowlist / authn.** Restrict who can reach the central backend (IP allowlist,
+  mTLS, or an auth gateway). Identity (`CONTEXT_USER_ID`/`ORG_ID`) must be set by a trusted
+  layer, not by untrusted callers.
+- **Secrets.** `CONTEXT_DB_KEY`, backend URLs, and API keys come from the environment only —
+  never commit them. Rotate `CONTEXT_DB_KEY` with `chitta rekey` (see above).
+- **Audit retention.** Enable `CHITTA_AUDIT=1`, periodically `chitta audit --verify`, and
+  ship/rotate the encrypted DB (or export the `audit` table) to your retention store.
 
 ## Supported versions
 

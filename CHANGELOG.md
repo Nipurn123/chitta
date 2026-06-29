@@ -6,6 +6,30 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-29
+
+### Security
+- **Tamper-evident audit logging (opt-in, `CHITTA_AUDIT=1`).** Every tool call (ingest /
+  recall / forget / profile / graph) is appended to an `audit` table recording **who**
+  (`CONTEXT_USER_ID` + org), **what** (tool + redacted summary), **when**, and success/denied.
+  Each entry is **hash-chained** to the previous (`sha256(prev_hash + entry)`), so any later
+  edit/delete/reorder breaks the chain - `chitta audit --verify` walks it and reports the
+  first broken id (tamper-evident even against DB-write access). **Privacy-preserving:** raw
+  stored content never enters the trail - ingests log title + byte size, reads log the
+  query/subject intent only. Inspect with `chitta audit [--tail N]`; encrypted with the store
+  when `CONTEXT_DB_KEY` is set. Off by default (personal use stays zero-overhead/private).
+  New `src/embedded/store/audit.ts`, `src/mcp/audit-redact.ts`; `test/security/audit.test.ts`.
+- **Encryption key rotation (`chitta rekey`).** Re-encrypt the whole store under a new
+  `CONTEXT_DB_KEY` (or `--new-key ''` to decrypt back to plaintext) via a logical
+  re-encryption copy + atomic file swap, keeping a timestamped backup. Audit hash-chain,
+  version chains, validity intervals, and provenance are all preserved.
+  New `src/embedded/store/rekey.ts`; `test/security/rekey.test.ts` (plaintext roundtrip
+  always runs; encrypt/decrypt roundtrip gated on the optional `libsql`).
+- **`SECURITY.md` deployment-hardening checklist** documenting the infra-layer controls
+  (TLS in transit, per-IP rate limiting, network allowlist/authn, secret handling, audit
+  retention) that belong at the proxy/infra layer rather than in a local stdio server.
+- `context_about` now reports encryption-at-rest and audit-log status.
+
 ## [0.1.6] - 2026-06-29
 
 ### Fixed

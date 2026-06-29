@@ -18,6 +18,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { resolveBackend } from "./backend"
 import { resolveTools } from "./tools"
+import { auditTarget } from "./audit-redact"
 
 const backend = resolveBackend()
 const { schemas, dispatch } = resolveTools(backend)
@@ -69,12 +70,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: schemas }
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params
+  const a = args as Record<string, unknown>
   try {
     const handler = dispatch.get(name)
     if (!handler) return { content: [{ type: "text", text: `unknown tool: ${name}` }], isError: true }
-    return await handler(args as Record<string, unknown>, backend)
+    const res = await handler(a, backend)
+    backend.audit?.({ action: name, target: auditTarget(name, a), ok: !res.isError, detail: res.isError ? "error" : "" })
+    return res
   } catch (e) {
-    const msg = e instanceof Error && e.name === "AuthorizationError" ? `Not authorized: ${e.message}` : `error: ${String(e)}`
+    const denied = e instanceof Error && e.name === "AuthorizationError"
+    backend.audit?.({ action: name, target: auditTarget(name, a), ok: false, detail: denied ? "denied" : "error" })
+    const msg = denied ? `Not authorized: ${(e as Error).message}` : `error: ${String(e)}`
     return { content: [{ type: "text", text: msg }], isError: true }
   }
 })

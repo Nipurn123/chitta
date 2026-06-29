@@ -19,6 +19,7 @@ import * as graph from "./store/nodes-edges"
 import * as fts from "./store/fts"
 import { ChunkRepo } from "./store/chunks"
 import { MemoryRepo } from "./store/memories"
+import { AuditRepo } from "./store/audit"
 import * as salience from "./store/salience"
 
 export type Json = Record<string, unknown>
@@ -28,6 +29,7 @@ export class SqliteStore {
   readonly vecEnabled: boolean
   readonly ftsEnabled: boolean
   readonly memories: MemoryRepo
+  readonly audit: AuditRepo
   private readonly chunks: ChunkRepo
 
   constructor(path = ":memory:") {
@@ -48,6 +50,7 @@ export class SqliteStore {
     this.ftsEnabled = fts.tryEnableFts(this.db)
     this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, encrypted)
     this.memories = new MemoryRepo(this.db)
+    this.audit = new AuditRepo(this.db)
   }
 
   // ── Graph: nodes & edges ────────────────────────────────────────────────

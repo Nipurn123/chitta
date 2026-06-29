@@ -9,6 +9,7 @@
 //   bun build cli.ts --compile --outfile ctx
 
 import { buildEmbeddedContext } from "./index"
+import { rekeyDatabase } from "./store/rekey"
 
 function arg(flag: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(flag)
@@ -21,9 +22,41 @@ function has(flag: string): boolean {
 async function main() {
   const cmd = process.argv[2]
   const dbPath = arg("--db", process.env.CONTEXT_DB ?? "context.db")!
+
+  // rekey runs BEFORE opening the store (it manages its own old/new-key handles).
+  if (cmd === "rekey") {
+    const oldKey = process.env.CONTEXT_DB_KEY ?? ""
+    const newKey = arg("--new-key") ?? ""
+    if (oldKey === newKey) {
+      console.log("nothing to do: --new-key equals the current CONTEXT_DB_KEY. Set CONTEXT_DB_KEY to the OLD key and pass the NEW key via --new-key (use '' to decrypt).")
+      return
+    }
+    const r = await rekeyDatabase(dbPath, oldKey, newKey)
+    console.log(
+      `re-encrypted ${dbPath}: ${r.records} node(s), ${r.edges} edge(s), ${r.chunks} chunk(s), ${r.memories} memor(ies), ${r.audit} audit row(s).\n` +
+        `backup of the original: ${r.backup}\n` +
+        `→ now set CONTEXT_DB_KEY="${newKey ? "<new key>" : ""}" (${newKey ? "encrypted" : "plaintext"}) for future runs, and delete the backup once verified.`,
+    )
+    return
+  }
+
   const ctx = buildEmbeddedContext({ path: dbPath })
 
   switch (cmd) {
+    case "audit": {
+      if (has("--verify")) {
+        const v = ctx.store.audit.verify()
+        console.log(v.ok ? `audit chain intact (${v.entries} entries, tamper-evident)` : `AUDIT TAMPERING DETECTED at id ${v.brokenAt}: ${v.reason}`)
+      } else {
+        const rows = ctx.store.audit.tail(Number(arg("--tail", "20")))
+        if (rows.length === 0) console.log("(no audit entries - set CHITTA_AUDIT=1 to enable logging)")
+        for (const r of rows.reverse()) {
+          const when = new Date(r.ts).toISOString()
+          console.log(`${when}  ${r.actor}@${r.org}  ${r.action}  ${r.ok ? "ok" : "DENIED/ERR"}  ${r.target}`)
+        }
+      }
+      break
+    }
     case "user-add": {
       const userId = process.argv[3]
       const org = arg("--org", "org1")!
@@ -78,7 +111,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors")
+      console.log("commands: user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }

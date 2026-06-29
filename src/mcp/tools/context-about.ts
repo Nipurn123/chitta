@@ -41,6 +41,8 @@ async function describe(backend: ContextBackend): Promise<string> {
     `- embeddings: ${backend.embeddings}`,
     `- knowledge extraction: ${backend.extraction}`,
     `- code graph: tree-sitter AST over ${CodeExtractor.languages().length} languages (functions/classes + calls/imports/defines)`,
+    `- encryption at rest: ${process.env.CONTEXT_DB_KEY ? "ON (libSQL AES-256 whole-file)" : "off (set CONTEXT_DB_KEY; rotate with `chitta rekey`)"}`,
+    `- audit log: ${backend.audit ? "ON (append-only, hash-chained, tamper-evident)" : "off (set CHITTA_AUDIT=1)"}`,
   ]
   if (backend.stats) {
     const s = await backend.stats()
