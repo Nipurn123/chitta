@@ -6,6 +6,24 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-06-29
+
+### Performance
+- **~3.9× faster `get_context` via ACL/graph memoization (zero algorithm change).** A single
+  `get_context` recomputed the two expensive, side-effect-free provider lookups
+  (`getAccessibleVirtualRecordIds`, `getKnowledgeGraph`) up to 4× — once each in KGQA, memory
+  recall, neighborhood, and hybrid search — and again on every repeat query. They're now
+  memoized in `SqliteGraphProvider`, keyed by a monotonic **store data-version** that bumps on
+  every nodes/edges mutation, so a cache hit is byte-identical to a fresh computation and **no
+  stale permission view is possible** (any write that could change access invalidates the
+  cache; salience/decay writes deliberately don't, so read-time decay can't thrash it).
+  Measured A/B on identical data at 5k docs: ~436 ms → ~112 ms (**3.9×**); repeat queries with
+  no writes between benefit further. KGQA, RRF/hybrid retrieval, GraphRAG, rerank, memory, and
+  the ACL semantics are all unchanged. Regression: `test/security/acl-cache.test.ts` proves
+  invalidation (newly-shared record becomes visible, deleted record disappears, new graph
+  relation appears) right after a cached read; the ACL red-team probe + multiuser suites still
+  pass.
+
 ## [0.1.10] - 2026-06-29
 
 ### Fixed

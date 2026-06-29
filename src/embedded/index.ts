@@ -154,6 +154,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     store.db.query("DELETE FROM edges WHERE src = ? OR dst = ?").run(recordId, recordId)
     store.db.query("DELETE FROM chunks WHERE point_id LIKE ?").run(`${recordId}#%`)
     for (const { v } of vids) if (v) store.db.query("DELETE FROM chunks WHERE virtual_record_id = ?").run(v)
+    store.bumpVersion() // raw node/edge deletes bypass the facade → invalidate the ACL/graph cache
   }
 
   // HYBRID retrieval - three complementary signals fused with Reciprocal Rank Fusion
@@ -354,6 +355,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   async function rebuildGraph(): Promise<{ records: number; entities: number }> {
     store.db.exec("DELETE FROM nodes WHERE coll = 'entities'")
     store.db.exec("DELETE FROM edges WHERE label IN ('mentions','relates_to')")
+    store.bumpVersion() // raw deletes bypass the facade → invalidate before re-extraction
     const records = store.db.query("SELECT id, data FROM nodes WHERE coll = 'records'").all() as Array<{ id: string; data: string }>
     let entities = 0
     for (const rec of records) {

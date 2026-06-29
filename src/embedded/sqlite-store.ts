@@ -31,6 +31,18 @@ export class SqliteStore {
   readonly memories: MemoryRepo
   readonly audit: AuditRepo
   private readonly chunks: ChunkRepo
+  // Monotonic data version - bumped on every mutation of the nodes/edges (the graph + ACL).
+  // The graph provider memoizes its two expensive ACL/graph lookups against this, so a
+  // cache hit is provably identical to a fresh computation (any write that could change the
+  // result bumps the version → cache misses → recompute). Salience/decay writes do NOT bump
+  // it (they don't change graph topology or ACL), so read-time decay can't thrash the cache.
+  private _dataVersion = 0
+  get dataVersion(): number {
+    return this._dataVersion
+  }
+  bumpVersion(): void {
+    this._dataVersion++
+  }
 
   constructor(path = ":memory:") {
     const encrypted = isEncrypted()
@@ -70,26 +82,35 @@ export class SqliteStore {
   // ── Graph: nodes & edges ────────────────────────────────────────────────
   addNode(id: string, coll: string, data: Json = {}): void {
     graph.addNode(this.db, id, coll, data)
+    this.bumpVersion()
   }
 
   addEdge(src: string, dst: string, label: string, opts: { weight?: number; validAt?: number; recordId?: string; confidence?: number } = {}): void {
     graph.addEdge(this.db, src, dst, label, opts)
+    this.bumpVersion()
   }
 
   clearRecordContributions(recordId: string): void {
     graph.clearRecordContributions(this.db, recordId)
+    this.bumpVersion()
   }
 
   supersedeEdge(src: string, label: string, keepDst: string, atTime = Date.now()): number {
-    return graph.supersedeEdge(this.db, src, label, keepDst, atTime)
+    const n = graph.supersedeEdge(this.db, src, label, keepDst, atTime)
+    this.bumpVersion()
+    return n
   }
 
   expireEdges(src: string, label: string, dst?: string): number {
-    return graph.expireEdges(this.db, src, label, dst)
+    const n = graph.expireEdges(this.db, src, label, dst)
+    this.bumpVersion()
+    return n
   }
 
   backfillEdgeProvenance(): number {
-    return graph.backfillEdgeProvenance(this.db)
+    const n = graph.backfillEdgeProvenance(this.db)
+    this.bumpVersion()
+    return n
   }
 
   // ── Salience / decay ────────────────────────────────────────────────────
