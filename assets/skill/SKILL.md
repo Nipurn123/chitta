@@ -1,6 +1,6 @@
 ---
 name: chitta
-description: Permission-aware long-term memory for AI agents. Use to recall prior context before answering, store durable facts/decisions/preferences, and query how concepts relate. Backed by Chitta's MCP tools (context_ingest, get_context, context_graph) with a CLI fallback. Trigger whenever a task may depend on earlier work, when the user shares something worth remembering, or when asked how things connect.
+description: Permission-aware long-term memory for AI agents. Use to recall prior context before answering, store durable facts/decisions/preferences, profile a person/entity, forget retracted facts, and query how concepts relate. Backed by Chitta's MCP tools (get_context, context_ingest, context_forget, context_profile, context_graph, context_relate) with a CLI fallback. Trigger whenever a task may depend on earlier work, when the user shares something worth remembering, when a fact is retracted, or when asked who/what something is or how things connect.
 ---
 
 # Chitta — memory for this agent
@@ -16,18 +16,27 @@ permissions allow. Use it proactively — memory is only useful if you reach for
    call **`get_context`** first with the question. It returns ranked, cited,
    permission-filtered snippets. Cite what you use.
 2. **Store durable knowledge.** When the user states a lasting fact, decision, preference, or
-   you produce an artifact worth remembering, call **`context_ingest`** with the text (and a
-   short `recordName`). Don't store secrets, throwaway chatter, or transient state.
-3. **Reason over connections.** For "how are X and Y related" or to map a topic, call
-   **`context_graph`** to get the concepts + relationships the user can access.
+   you produce an artifact worth remembering, call **`context_ingest`** with the text plus the
+   `entities` and `relations` you identified (precise typed triples). Don't store secrets,
+   throwaway chatter, or transient state.
+3. **Forget what's retracted.** When the user says "forget that" or a fact is no longer true,
+   call **`context_forget`** with a description of what to drop (the new value alone also
+   auto-supersedes an old single-valued fact on ingest).
+4. **Profile a subject.** For "who is X" / "what do we know about X", call **`context_profile`**
+   — it returns permanent facts + recent facts (contradictions already resolved) + connections.
+5. **Reason over connections.** For "how are X and Y related" or to map a topic, call
+   **`context_graph`** (the concept map) or **`context_relate`** (neighbors / path / impact).
 
 ## The MCP tools
 
 | Tool | Use |
 |---|---|
-| `get_context` | Retrieve ranked, cited, permission-filtered snippets for a query |
-| `context_ingest` | Store text → record + permission edges + vector chunks + extracted concept graph |
+| `get_context` | Ranked, cited, permission-filtered recall + current (contradiction-resolved) memory |
+| `context_ingest` | Store text → record + permission edges + vector chunks + concept graph + atomic memories |
+| `context_forget` | Forget memories that are no longer true/wanted (soft-delete, within your access) |
+| `context_profile` | Profile a person/org/entity: permanent + recent facts + connections |
 | `context_graph` | Return the accessible knowledge graph (concepts + relationships) |
+| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
 
 ## CLI fallback (no MCP)
 

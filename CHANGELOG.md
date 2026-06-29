@@ -6,7 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
-## [0.1.11] - 2026-06-29
+## [0.1.12] - 2026-06-29
+
+### Docs
+- **Accuracy pass on shipped docs.** The skill (`assets/skill/SKILL.md`) and `ARCHITECTURE.md`
+  listed only 3 of the 7 MCP tools — updated to include `context_forget`, `context_profile`,
+  `context_relate`, `context_about`, with when-to-use guidance. README now documents the
+  operational CLI (`chitta doctor`, `chitta audit [--verify]`, `chitta rekey`) with the
+  **correct** rekey usage (the current key comes from `CONTEXT_DB_KEY`, not an `--old-key`
+  flag). Storage-schema tables now list `memories`, `audit`, and `vec_native`, and note
+  embeddings are Float32 BLOBs. Test-count badge refreshed (205). The `install` success
+  message lists the full tool set and points to `chitta doctor`.
 
 ### Performance
 - **~3.9× faster `get_context` via ACL/graph memoization (zero algorithm change).** A single

@@ -178,5 +178,6 @@ console.log(`Chitta ${action} — ${project ? "project" : "global"} scope${proje
 for (const p of platforms) console.log(run(p) + "\n")
 if (action === "install") {
   console.log("Done. Restart the tool (or reload its MCP config) to pick up Chitta's tools:")
-  console.log("  context_ingest · get_context · context_graph")
+  console.log("  get_context · context_ingest · context_forget · context_profile · context_graph · context_relate")
+  console.log("Tip: `chitta doctor` shows your config + health.")
 }

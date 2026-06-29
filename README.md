@@ -31,7 +31,7 @@
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-139%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-205%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -143,6 +143,23 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
 | `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
 
+## Operate (CLI)
+
+```bash
+chitta doctor                      # config + health: identity, encryption, ANN, audit, counts
+
+# audit log (enable with CHITTA_AUDIT=1)
+chitta audit                       # recent entries (who/what/when)
+chitta audit --verify              # check the hash chain is intact (tamper-evident)
+
+# encryption key rotation — the CURRENT key comes from CONTEXT_DB_KEY (not a flag)
+chitta rekey --new-key "<key>"                 # encrypt a plaintext store
+CONTEXT_DB_KEY="old" chitta rekey --new-key "new"   # rotate to a new key
+CONTEXT_DB_KEY="key" chitta rekey --new-key ""      # decrypt back to plaintext
+```
+
+Encryption + rotation need the optional driver once: `bun add libsql`.
+
 ## Living memory (permission-aware)
 
 Beyond storing snippets, Chitta maintains a **living-memory layer** - the part most memory
@@ -163,7 +180,7 @@ products treat as proprietary magic, here done natively and **ACL-scoped**:
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 139 tests
+bun test                          # 205 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 

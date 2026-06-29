@@ -82,9 +82,13 @@ Every stage is a single module behind an interface. Data flows as plain objects 
 
 | Tool | Does |
 |---|---|
-| `context_ingest` | Store text → record node + permission edges (ACL) + vector chunks + extracted concept graph |
-| `get_context` | Retrieve ranked, cited, permission-filtered snippets |
+| `context_ingest` | Store text → record node + permission edges (ACL) + vector chunks + concept graph + atomic memories |
+| `get_context` | Retrieve ranked, cited, permission-filtered snippets + current (contradiction-resolved) memory |
+| `context_forget` | Forget memories no longer true/wanted (soft-delete, ACL-scoped) |
+| `context_profile` | Profile a person/org/entity: permanent + recent facts + connections |
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
+| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
+| `context_about` | Describe the server's mode, engines, config, and live counts |
 
 ## Storage schema (local mode)
 
@@ -93,9 +97,11 @@ One file at `$CONTEXT_DB` or `~/.local/share/100xprompt/context.db`:
 | Table | Holds |
 |---|---|
 | `nodes` | Graph vertices - records, users, orgs, **entities** |
-| `edges` | Relationships - `permissions`, `belongsTo`, `mentions`, `relates_to` |
-| `chunks` | Text + embedding vectors |
-| `vec_chunks` | sqlite-vec `vec0` ANN index (when an extension-capable SQLite is present) |
+| `edges` | Relationships - `permissions`, `belongsTo`, `mentions`, `relates_to` (bi-temporal) |
+| `chunks` | Text + embedding vectors (compact Float32 BLOB) |
+| `memories` | Atomic facts - version chains (contradiction → supersede), forgetting, static/dynamic |
+| `audit` | Append-only, hash-chained access log (opt-in via `CHITTA_AUDIT`) |
+| `vec_chunks` / `vec_native` | ANN index - sqlite-vec `vec0` (plaintext) or libSQL native DiskANN (encrypted) |
 
 ## Vector search - adaptive
 
