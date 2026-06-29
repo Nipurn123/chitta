@@ -4,6 +4,7 @@ import type { SqliteStore } from "../sqlite-store"
 import { embedQueryWith, type EmbeddingProvider } from "../../provider"
 import type { AccessibleMap, SearchResult } from "../../types"
 import { cosine } from "./passage"
+import { decodeF32 } from "../store/vector-blob"
 
 export async function graphStage(
   graph: SqliteGraphProvider,
@@ -25,10 +26,10 @@ export async function graphStage(
       for (const rec of records) {
         const vid = (rec.virtualRecordId as string) ?? rec._key
         if (seen.has(vid)) continue
-        const rows = store.db.query("SELECT content, embedding FROM chunks WHERE virtual_record_id = ?").all(vid) as Array<{ content: string; embedding: string }>
+        const rows = store.db.query("SELECT content, embedding FROM chunks WHERE virtual_record_id = ?").all(vid) as Array<{ content: string; embedding: Uint8Array | string }>
         let best: { content: string; score: number } | null = null
         for (const row of rows) {
-          const s = cosine(q, JSON.parse(row.embedding) as number[])
+          const s = cosine(q, decodeF32(row.embedding) as unknown as number[])
           if (!best || s > best.score) best = { content: row.content, score: s }
         }
         if (best)

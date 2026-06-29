@@ -7,6 +7,7 @@
 
 import { Database } from "bun:sqlite"
 import { ph } from "./schema"
+import { encodeF32 } from "./vector-blob"
 
 export interface MemoryRow {
   id: string
@@ -14,7 +15,7 @@ export interface MemoryRow {
   virtual_record_id: string
   subject_key: string
   memory: string
-  embedding: string | null
+  embedding: Uint8Array | string | null
   is_static: number
   is_forgotten: number
   forget_after: number | null
@@ -71,7 +72,7 @@ export class MemoryRepo {
         m.virtualRecordId,
         m.subjectKey,
         m.memory,
-        JSON.stringify(m.embedding),
+        encodeF32(m.embedding),
         m.isStatic ? 1 : 0,
         m.forgetAfter ?? null,
         m.version ?? 1,
@@ -142,7 +143,7 @@ export class MemoryRepo {
   }
 
   updateEmbedding(id: string, embedding: number[]): void {
-    this.db.query("UPDATE memories SET embedding = ? WHERE id = ?").run(JSON.stringify(embedding), id)
+    this.db.query("UPDATE memories SET embedding = ? WHERE id = ?").run(encodeF32(embedding), id)
   }
 
   counts(): { total: number; current: number; forgotten: number } {

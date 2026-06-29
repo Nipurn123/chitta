@@ -36,10 +36,24 @@ export class SqliteStore {
     const encrypted = isEncrypted()
     tryEnableExtensions()
     this.db = openDatabase(path) // bun:sqlite by default; encrypted libSQL if CONTEXT_DB_KEY set
-    try {
-      this.db.exec("PRAGMA journal_mode = WAL;")
-    } catch {
-      /* WAL may be unsupported under the encrypted driver — non-fatal */
+    // Read-latency pragmas (set once, before migrate). A large page cache is the main
+    // lever for both paths - and the ONLY one for the encrypted driver, where decrypted
+    // pages are then served from cache (decrypt paid once per page). mmap is a no-op under
+    // encryption (pages must pass the decrypt hook), so we only enable it when plaintext.
+    // Each is wrapped so an unsupported pragma on the encrypted driver is non-fatal.
+    const pragmas = [
+      "PRAGMA journal_mode = WAL;",
+      "PRAGMA synchronous = NORMAL;",
+      "PRAGMA cache_size = -262144;", // 256 MB page cache (negative = KiB)
+      "PRAGMA temp_store = MEMORY;",
+      ...(encrypted ? [] : ["PRAGMA mmap_size = 1073741824;"]), // 1 GB, plaintext only
+    ]
+    for (const p of pragmas) {
+      try {
+        this.db.exec(p)
+      } catch {
+        /* pragma unsupported under the encrypted driver — non-fatal */
+      }
     }
     migrate(this.db)
     // The encrypted (libSQL) driver can't load the sqlite-vec extension (loadExtension is
@@ -94,6 +108,12 @@ export class SqliteStore {
 
   knnSearch(queryVec: number[], k: number): Array<{ rowid: number; distance: number }> {
     return this.chunks.knnSearch(queryVec, k)
+  }
+
+  /** True when an ANN index is serving queries (vec0 plaintext, or libSQL native DiskANN
+   *  under encryption). False ⇒ the fast BLOB brute-force path is used. */
+  get annEnabled(): boolean {
+    return this.chunks.annEnabled
   }
 
   resetVec(): void {

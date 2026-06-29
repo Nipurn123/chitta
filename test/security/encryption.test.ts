@@ -61,4 +61,25 @@ describe("encryption at rest", () => {
     expect(buf.subarray(0, 15).toString("latin1")).not.toBe("SQLite format 3")
     rmSync(dir, { recursive: true, force: true })
   })
+
+  enc("encrypted mode uses libSQL NATIVE vector ANN (DiskANN), not brute force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "chitta-encann-"))
+    const path = join(dir, "store.db")
+    process.env.CONTEXT_DB_KEY = "test-encryption-key-at-least-32-bytes!"
+    const { buildEmbeddedContext } = await import("../../src/embedded/index")
+    const ctx = buildEmbeddedContext({ path })
+    ctx.ingestor.registerUser("alice", "acme", "a@x.com", "editor")
+    for (let i = 0; i < 50; i++) {
+      await ctx.authorizedIngest("alice", {
+        recordId: `r${i}`, orgId: "acme", recordName: `Doc ${i}`,
+        text: `record number ${i} about topic ${i % 7} alpha beta`, permittedPrincipals: [],
+      })
+    }
+    // native DiskANN index is live under encryption (no extension load needed)
+    expect(ctx.store.annEnabled).toBe(true)
+    const res = await ctx.retrieval.searchWithFilters({ queries: ["topic 3 alpha"], userId: "alice", orgId: "acme", limit: 5 })
+    expect(res.searchResults.length).toBeGreaterThan(0)
+    ctx.store.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

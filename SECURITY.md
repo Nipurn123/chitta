@@ -67,12 +67,14 @@ without the key (verified: the SQLite header and all content are ciphertext on d
 `test/security/encryption.test.ts`). The full knowledge graph, ACL, FTS, and vector search
 keep working under encryption.
 
-- **Trade-off:** the encrypted (libSQL) driver can't load the `sqlite-vec` extension
-  (`loadExtension` is unimplemented upstream), so encrypted mode uses **brute-force cosine**
-  vector search instead of the ANN index — correctness identical, just no ANN speedup
-  (fine up to mid-scale; reindex/migrate to the central backend for very large encrypted
-  corpora). `libsql` is an optional dependency installed automatically; if it's missing and
-  `CONTEXT_DB_KEY` is set, Chitta errors clearly instead of silently storing plaintext.
+- **Fast ANN while encrypted.** The encrypted (libSQL) driver can't load the `sqlite-vec`
+  extension, but libSQL has a **native DiskANN vector index built into the engine** (no
+  extension to load), so encrypted mode gets **real ANN inside the encrypted file** -
+  `F32_BLOB` column + `libsql_vector_idx` + `vector_top_k`. If the native index is
+  unavailable (older libSQL) Chitta transparently falls back to the fast BLOB brute-force
+  cosine path (correctness identical), so encrypted retrieval can never break. `libsql` is an
+  optional dependency; if it's missing and `CONTEXT_DB_KEY` is set, Chitta errors clearly
+  instead of silently storing plaintext.
 - **Default (no key):** the store is plain `bun:sqlite` with the ANN index — unchanged. The
   recommended baseline without a key is OS disk encryption (FileVault / LUKS / BitLocker).
 - **Key management:** supply `CONTEXT_DB_KEY` via the environment (or your MCP client's

@@ -6,6 +6,30 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-06-29
+
+### Performance
+- **Embeddings stored as compact Float32 BLOBs, not JSON TEXT.** The brute-force vector
+  path no longer `JSON.parse`s every vector on every query (the dominant cost) - embeddings
+  decode zero-copy as `Float32Array` views, scored by dot product (== cosine for our
+  normalized embedders, skipping the per-row sqrt), with a bounded top-k selector instead of
+  a full O(N log N) sort. ~2-3x smaller on disk (fewer pages to decrypt under encryption).
+  Measured brute-force top-8: ~1.4 ms @1k, ~15 ms @10k vectors. Existing DBs are read
+  back-compatibly (legacy JSON-TEXT still decodes) and rewritten as BLOB on reindex/ingest.
+  New `src/embedded/store/vector-blob.ts`; `test/embedded/vector-blob.test.ts`.
+- **Real ANN under encryption (libSQL native DiskANN).** Encrypted mode can't load the
+  `sqlite-vec` extension, but libSQL has a native vector index built into the engine - so
+  encrypted retrieval now uses `F32_BLOB` + `libsql_vector_idx` + `vector_top_k` (ANN inside
+  the encrypted file, no extension), removing the prior "encryption ⇒ brute force only"
+  limitation. Falls back transparently to the (now fast) BLOB brute-force path if native
+  vector is unavailable, so encrypted mode can't break. `store.annEnabled` reflects which
+  path is active; `test/security/encryption.test.ts` (gated on `libsql`) asserts native ANN
+  engages under encryption.
+- **Read-latency pragmas**: 256 MB page `cache_size` (the main lever for the encrypted
+  driver - decrypt paid once per page, then cache-served), `synchronous=NORMAL`,
+  `temp_store=MEMORY`, and `mmap_size=1 GB` on the plaintext path (a no-op under encryption,
+  so it's only set there).
+
 ## [0.1.7] - 2026-06-29
 
 ### Security

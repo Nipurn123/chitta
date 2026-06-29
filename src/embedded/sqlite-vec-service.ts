@@ -7,24 +7,11 @@
 
 import type { VectorDBService, VectorPoint, VectorQueryResult } from "../provider"
 import type { SqliteStore } from "./sqlite-store"
+import { decodeF32, dot, normalize, TopK } from "./store/vector-blob"
 
 interface EmbeddedFilter {
   must?: Record<string, unknown>
   should?: Record<string, unknown>
-}
-
-function cosine(a: number[], b: number[]): number {
-  let dot = 0
-  let na = 0
-  let nb = 0
-  const n = Math.min(a.length, b.length)
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i]
-    na += a[i] * a[i]
-    nb += b[i] * b[i]
-  }
-  if (na === 0 || nb === 0) return 0
-  return dot / (Math.sqrt(na) * Math.sqrt(nb))
 }
 
 export class SqliteVecService implements VectorDBService {
@@ -54,10 +41,10 @@ export class SqliteVecService implements VectorDBService {
       const allowedVids = filter.should?.["virtualRecordId"] as string[] | undefined
       const allowed = allowedVids ? new Set(allowedVids) : undefined
 
-      // Try ANN; fall back to brute-force when the index can't serve (missing /
-      // not yet built / written by a non-vec store). Guarantees we never miss rows
-      // that exist in `chunks` just because the ANN index isn't populated.
-      let points = this.store.vecEnabled && dense ? this.annQuery(dense, mustOrg, allowed, limit) : []
+      // Try ANN (vec0 plaintext OR libSQL native DiskANN under encryption); fall back to
+      // the fast BLOB brute-force when the index can't serve (missing / not yet built /
+      // written by a non-vec store). Guarantees we never miss rows that exist in `chunks`.
+      let points = this.store.annEnabled && dense ? this.annQuery(dense, mustOrg, allowed, limit) : []
       if (points.length === 0) points = this.bruteForce(dense, mustOrg, allowed, limit)
       return { points }
     })
@@ -96,27 +83,31 @@ export class SqliteVecService implements VectorDBService {
     return out.slice(0, limit)
   }
 
-  // Fallback: scan + cosine in TS (portable, no extension needed).
+  // Fallback: scan in TS (portable, no extension needed) - but fast. Embeddings are read
+  // as Float32 BLOBs (zero-copy, no JSON.parse), scored by dot product against the
+  // unit-normalized query (dot == cosine for our normalized embedders), and only the top-k
+  // are kept via a bounded selector (no full O(N log N) sort of the whole corpus).
   private bruteForce(
     dense: number[] | undefined,
     mustOrg: string | undefined,
     allowed: Set<string> | undefined,
     limit: number,
   ): VectorPoint[] {
+    if (!dense) return []
+    const q = normalize(dense)
     const rows = this.store.db
       .query("SELECT point_id, virtual_record_id, org_id, content, embedding FROM chunks")
-      .all() as Array<{ point_id: string; virtual_record_id: string; org_id: string; content: string; embedding: string }>
-    const scored: VectorPoint[] = []
+      .all() as Array<{ point_id: string; virtual_record_id: string; org_id: string; content: string; embedding: Uint8Array | string }>
+    const top = new TopK<{ point_id: string; content: string; vid: string; org: string }>(limit)
     for (const c of rows) {
       if (mustOrg != null && c.org_id !== mustOrg) continue
       if (allowed && !allowed.has(c.virtual_record_id)) continue
-      scored.push({
-        id: c.point_id,
-        score: dense ? cosine(dense, JSON.parse(c.embedding) as number[]) : 0,
-        payload: { page_content: c.content, metadata: { virtualRecordId: c.virtual_record_id, orgId: c.org_id } },
-      })
+      top.offer(dot(q, decodeF32(c.embedding)), { point_id: c.point_id, content: c.content, vid: c.virtual_record_id, org: c.org_id })
     }
-    scored.sort((a, b) => b.score - a.score)
-    return scored.slice(0, limit)
+    return top.values().map(({ score, value }) => ({
+      id: value.point_id,
+      score,
+      payload: { page_content: value.content, metadata: { virtualRecordId: value.vid, orgId: value.org } },
+    }))
   }
 }

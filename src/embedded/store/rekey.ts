@@ -8,6 +8,7 @@
 
 import fs from "node:fs"
 import { SqliteStore } from "../sqlite-store"
+import { decodeF32 } from "./vector-blob"
 
 // Copy a table verbatim (all columns, all rows) between two store handles. Used for the
 // source-of-truth tables whose temporal/hash/provenance columns must be preserved exactly.
@@ -57,9 +58,9 @@ export async function rekeyDatabase(path: string, oldKey: string, newKey: string
     const audit = copyTable(src, dst, "audit") // preserves id + hash chain verbatim
     // Chunks go through addChunk so the FTS (and vec, when enabled) index is rebuilt.
     const chunkRows = src.db.query("SELECT point_id, virtual_record_id, org_id, content, embedding FROM chunks").all() as Array<{
-      point_id: string; virtual_record_id: string; org_id: string; content: string; embedding: string
+      point_id: string; virtual_record_id: string; org_id: string; content: string; embedding: Uint8Array | string
     }>
-    for (const c of chunkRows) dst.addChunk(c.point_id, c.virtual_record_id, c.org_id, c.content, JSON.parse(c.embedding) as number[])
+    for (const c of chunkRows) dst.addChunk(c.point_id, c.virtual_record_id, c.org_id, c.content, Array.from(decodeF32(c.embedding)))
     counts = { records, edges, chunks: chunkRows.length, memories, audit, backup: "" }
   } finally {
     src.close()

@@ -21,6 +21,7 @@ import type { RetrievalResponse } from "../types"
 import { hybridSearch } from "./retrieval/hybrid-retriever"
 import { consolidateTriples } from "./memory/consolidate"
 import { cosine } from "./retrieval/passage"
+import { decodeF32 } from "./store/vector-blob"
 import type { SearchTrace } from "./retrieval/trace"
 
 /** A current memory surfaced to a caller (latest version, not forgotten), ACL-scoped. */
@@ -119,9 +120,9 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
       try {
         const row = store.db
           .query("SELECT embedding FROM chunks WHERE embedding IS NOT NULL LIMIT 1")
-          .get() as { embedding: string } | undefined
+          .get() as { embedding: Uint8Array | string } | undefined
         if (!row) return // empty DB → the current embedder defines the vector space
-        const storedDim = (JSON.parse(row.embedding) as number[]).length
+        const storedDim = decodeF32(row.embedding).length
         const curDim = (await embeddings.embedDense("dimension probe")).length
         if (storedDim !== curDim) {
           opts.log?.error(
@@ -204,7 +205,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     const rows = store.memories.recall(vids)
     if (rows.length === 0) return []
     const qv = await (embeddings.embedQuery ? embeddings.embedQuery(query) : embeddings.embedDense(query))
-    const scored = rows.map((r) => ({ r, s: r.embedding ? cosine(qv, JSON.parse(r.embedding) as number[]) : 0 }))
+    const scored = rows.map((r) => ({ r, s: r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) : 0 }))
     scored.sort((a, b) => b.s - a.s)
     return scored.slice(0, limit).map(({ r }) => ({
       memory: r.memory, version: r.version, isStatic: !!r.is_static, updatedAt: r.updated_at, rootId: r.root_id ?? r.id,
@@ -224,7 +225,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     const qv = await (embeddings.embedQuery ? embeddings.embedQuery(query) : embeddings.embedDense(query))
     const targets = rows.filter((r) => {
       if (r.memory.toLowerCase().includes(q)) return true
-      return r.embedding ? cosine(qv, JSON.parse(r.embedding) as number[]) >= 0.6 : false
+      return r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) >= 0.6 : false
     })
     if (targets.length === 0) return []
     store.memories.forget(targets.map((r) => r.id), reason)

@@ -191,20 +191,25 @@ query  → ACL: which records may this user see?  (graph traversal)
 One file at `$CONTEXT_DB` or `~/.local/share/100xprompt/context.db`:
 - `nodes` - graph vertices (records, users, orgs, **entities**)
 - `edges` - relationships (`permissions`, `belongsTo`, `mentions`, `relates_to`)
-- `chunks` - text + embedding vectors
-- `vec_chunks` - **sqlite-vec ANN index** (when available - see below)
+- `chunks` - text + embedding vectors (Float32 BLOB)
+- `vec_chunks` / `vec_native` - **ANN index** (sqlite-vec when plaintext, libSQL native DiskANN when encrypted)
 
-## Vector search - adaptive (sqlite-vec, in-process)
+## Vector search - adaptive + fast (in-process)
 
-If an extension-capable SQLite is present, the store loads **[sqlite-vec](https://github.com/asg017/sqlite-vec)**
-and keeps a `vec0` ANN index *in the same file* - the TS-native, Python-free equivalent of
-zvec ("the SQLite of vector DBs"). ~16× faster than brute-force at 3k vectors, more at scale.
-Otherwise it **transparently falls back to brute-force cosine** - same results, same interface,
-fully portable for the single-binary path.
+Three paths, same interface, picked automatically (`store.annEnabled` reflects which is live):
 
-`bun:sqlite` disables extension loading by default; to enable the ANN fast path, point it at an
-extension-capable SQLite (e.g. `brew install sqlite`, auto-detected at common paths). No config
-needed - `store.vecEnabled` reflects which path is active.
+- **Plaintext, extension-capable SQLite →** loads **[sqlite-vec](https://github.com/asg017/sqlite-vec)**
+  (`vec0`, in the same file).
+- **Encrypted (`CONTEXT_DB_KEY`) →** libSQL **native DiskANN** vector index
+  (`F32_BLOB` + `libsql_vector_idx` + `vector_top_k`) - real ANN *inside the encrypted file*,
+  no extension to load. Encryption no longer costs you ANN.
+- **Fallback (no index available) →** fast brute-force cosine in TS.
+
+The brute-force path is engineered for low latency: embeddings are stored as compact
+**Float32 BLOBs** (no `JSON.parse` per query - decoded zero-copy), scored by **dot product**
+(== cosine for normalized vectors), kept with a **bounded top-k** selector (no full sort).
+Measured ~1.4 ms @1k and ~15 ms @10k vectors; the ANN paths stay sub-ms well beyond that.
+Read pragmas (256 MB page cache, mmap on plaintext, WAL) keep steady-state queries hot.
 
 ## Status
 

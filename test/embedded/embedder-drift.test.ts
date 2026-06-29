@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildEmbeddedContext } from "../../src/embedded/index"
+import { decodeF32 } from "../../src/embedded/store/vector-blob"
 import type { EmbeddingProvider } from "../../src/provider"
 
 // Deterministic fixed-dimension embedder (no model download), to simulate dim drift.
@@ -25,9 +26,9 @@ class FixedDim implements EmbeddingProvider {
 
 const storedDim = (ctx: ReturnType<typeof buildEmbeddedContext>): number => {
   const row = ctx.store.db.query("SELECT embedding FROM chunks WHERE embedding IS NOT NULL LIMIT 1").get() as
-    | { embedding: string }
+    | { embedding: Uint8Array | string }
     | undefined
-  return row ? (JSON.parse(row.embedding) as number[]).length : 0
+  return row ? decodeF32(row.embedding).length : 0
 }
 
 describe("embedder dimension drift self-heals (no crash)", () => {
