@@ -18,7 +18,10 @@ function copyTable(src: SqliteStore, dst: SqliteStore, table: string, conflictRe
   const rows = src.db.query(`SELECT ${cols.join(", ")} FROM ${table}`).all() as Array<Record<string, unknown>>
   const verb = conflictReplace ? "INSERT OR REPLACE" : "INSERT"
   const ins = dst.db.query(`${verb} INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)
-  for (const r of rows) ins.run(...cols.map((c) => r[c] as never))
+  // BLOB values can come back as ArrayBuffer (libsql) which bun:sqlite won't bind; wrap to
+  // a Uint8Array so copies work in BOTH directions (plaintext↔encrypted).
+  const bind = (v: unknown) => (v instanceof ArrayBuffer ? new Uint8Array(v) : v)
+  for (const r of rows) ins.run(...cols.map((c) => bind(r[c]) as never))
   return rows.length
 }
 

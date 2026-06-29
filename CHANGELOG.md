@@ -6,6 +6,21 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-06-29
+
+### Fixed
+- **`rekey` (encryption rotation) could fail copying BLOB columns across drivers.** A BLOB
+  read from the libSQL driver comes back as an `ArrayBuffer`, which `bun:sqlite` refuses to
+  bind; `copyTable` now coerces `ArrayBuffer` → `Uint8Array` so encrypt/decrypt rotation
+  works in both directions. Caught by running the (previously libsql-gated) rekey roundtrip.
+
+### Changed
+- **`libsql` added as a devDependency** so the encryption suite actually runs in CI: the
+  encryption-at-rest, rekey encrypt/decrypt roundtrip, and **native DiskANN-under-encryption**
+  tests are no longer skipped — they pass, verifying the Tier-2 encrypted-ANN path end to end.
+  (It remains an *opt-in runtime* extra for users — `bun add libsql` — and does NOT ship in
+  the published package.)
+
 ## [0.1.9] - 2026-06-29
 
 ### Added
