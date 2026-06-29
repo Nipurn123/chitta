@@ -40,6 +40,52 @@ async function main() {
     return
   }
 
+  // doctor: show the EFFECTIVE config + health the MCP server would run with (uses the
+  // real personal store path + identity, not the generic CLI db), so users can verify
+  // setup at a glance instead of guessing env vars.
+  if (cmd === "doctor") {
+    const { personalContext, personalContextPath, identity } = await import("./personal")
+    const id = identity()
+    const ctx = personalContext()
+    const s = ctx.store
+    const enc = !!process.env.CONTEXT_DB_KEY
+    const audit = /^(1|true|on)$/i.test(process.env.CHITTA_AUDIT ?? "")
+    const rerank = !/^(0|false|off)$/i.test(process.env.CONTEXT_RERANK ?? "")
+    const count = (sql: string) => (s.db.query(sql).get() as { c: number }).c
+    const ok = (b: boolean) => (b ? "\x1b[32m✓\x1b[0m" : "\x1b[2m–\x1b[0m")
+    const lines = [
+      "Chitta — configuration & health\n",
+      `  identity     user=${id.userId}  org=${id.orgId}  role=${id.role}${id.groups.length ? `  groups=${id.groups.join(",")}` : ""}`,
+      `  storage      ${personalContextPath()}`,
+      `  ${ok(enc)} encryption  ${enc ? "ON (libSQL AES-256 at rest)" : "off — enable with: chitta install --db-key <key>"}`,
+      `  ${ok(s.annEnabled)} vector ANN  ${s.annEnabled ? "on (index active)" : "brute-force cosine (no ANN index loaded)"}`,
+      `  ${ok(true)} embeddings  ${(process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()}${process.env.CONTEXT_EMBED_MODEL ? ` (${process.env.CONTEXT_EMBED_MODEL})` : ""}`,
+      `  ${ok(rerank)} reranker    ${rerank ? "on (cross-encoder, lazy)" : "off"}`,
+      `  ${ok(audit)} audit log   ${audit ? "ON (append-only, tamper-evident)" : "off — enable with: CHITTA_AUDIT=1"}`,
+      `  ${ok(!!process.env.CONTEXT_MEMORY_TTL_DAYS)} memory TTL  ${process.env.CONTEXT_MEMORY_TTL_DAYS ? `${process.env.CONTEXT_MEMORY_TTL_DAYS} days` : "none (memories don't auto-expire)"}`,
+      `  ${ok(!!process.env.CONTEXT_LLM_URL)} LLM extract ${process.env.CONTEXT_LLM_URL ? `${process.env.CONTEXT_LLM_MODEL || "default"} @ ${process.env.CONTEXT_LLM_URL}` : "off (caller-supplied typed triples)"}`,
+      "",
+      `  contents     ${count("SELECT count(*) c FROM nodes WHERE coll='records'")} records · ${count("SELECT count(*) c FROM chunks")} chunks · ${count("SELECT count(*) c FROM nodes WHERE coll='entities'")} entities`,
+    ]
+    const m = s.memories.counts()
+    lines.push(`  memory       ${m.current} current · ${m.forgotten} forgotten · ${m.total} versions`)
+    if (audit) {
+      const v = s.audit.verify()
+      lines.push(`  audit chain  ${v.ok ? `intact (${v.entries} entries)` : `\x1b[31mBROKEN at id ${v.brokenAt}\x1b[0m`}`)
+    }
+    // actionable warnings
+    if (enc) {
+      try {
+        (await import("node:module")).createRequire(import.meta.url)("libsql")
+      } catch {
+        lines.push(`\n  ⚠ CONTEXT_DB_KEY is set but the \`libsql\` package isn't installed — run: bun add libsql`)
+      }
+    }
+    console.log(lines.join("\n"))
+    s.close()
+    return
+  }
+
   const ctx = buildEmbeddedContext({ path: dbPath })
 
   switch (cmd) {
@@ -111,7 +157,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }

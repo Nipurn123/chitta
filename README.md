@@ -97,8 +97,26 @@ bunx @100xprompt/chitta install --platform cursor,claude-code
 bunx @100xprompt/chitta install --print         # just print the MCP config to paste anywhere
 ```
 
-Options: `--project` (write project-scoped config instead of global) · `--user-id <id> --org-id <id>`
-(bake identity into the config) · `--list` (show all tools) · `uninstall`.
+**Configure at install time** (every flag is baked into the tool's MCP `env` block, so it
+works the same across all tools):
+
+```bash
+bunx @100xprompt/chitta install --platform claude-code \
+  --user-id alice --org-id acme --role editor --groups eng,sec \
+  --embeddings real --memory-ttl 30 --audit          # identity, ACL, real embeddings, TTL, audit log
+bunx @100xprompt/chitta install --db-key "$KEY"      # encryption at rest (also: bun add libsql)
+```
+
+Flags: `--user-id --org-id --role --groups` (identity/ACL) · `--db <path>` ·
+`--embeddings auto|real|hash --embed-model` · `--db-key` (encryption) · `--audit`
+(tamper-evident log) · `--memory-ttl <days>` · `--llm-url --llm-model` · `--topk --rerank 0`.
+Other: `--project` (project-scoped) · `--list` · `uninstall`.
+
+**Check your setup any time:**
+
+```bash
+bunx @100xprompt/chitta doctor   # identity, storage, encryption, ANN, audit, embeddings, counts
+```
 
 **Optional extras** (kept out of the default install so `bunx` stays lightweight — the core
 runs great with the built-in fast hashing embedder):

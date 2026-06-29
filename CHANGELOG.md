@@ -6,6 +6,22 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-06-29
+
+### Added
+- **One-step configuration at install time.** Every config knob is now an `install` flag,
+  baked into the tool's MCP `env` block (works the same across all 15 tools):
+  `--user-id --org-id --role --groups` (identity/ACL), `--db`, `--embeddings`/`--embed-model`,
+  `--db-key` (encryption at rest, with a plaintext-in-config security warning), `--audit`
+  (tamper-evident log), `--memory-ttl`, `--llm-url`/`--llm-model`, `--topk`, `--rerank`.
+  `chitta install --list` now prints the full flag reference. (Previously only `--user-id`/
+  `--org-id` were exposed; the rest required hand-editing env.)
+- **`chitta doctor` — configuration & health at a glance.** Shows the effective setup the
+  MCP server runs with: identity/role/groups, storage path, encryption on/off, vector-ANN
+  vs brute-force, embeddings mode, reranker, audit on/off (+ chain integrity), memory TTL,
+  LLM extraction, and live record/chunk/entity/memory counts — plus actionable warnings
+  (e.g. `CONTEXT_DB_KEY` set but `libsql` not installed). One command to verify a deployment.
+
 ## [0.1.8] - 2026-06-29
 
 ### Performance

@@ -23,9 +23,41 @@ const flag = (name: string): string | undefined => {
 }
 const has = (name: string) => argv.includes(`--${name}`)
 
+// Every config knob is an env var that the installer bakes into the tool's MCP `env` block
+// (serverEntry writes it in each tool's dialect). One flag → one env var, so configuring
+// Chitta at install time is the same for all 15 tools.
+const ENV_FLAGS: Record<string, string> = {
+  "user-id": "CONTEXT_USER_ID",
+  "org-id": "CONTEXT_ORG_ID",
+  role: "CONTEXT_USER_ROLE", // admin | editor | viewer
+  groups: "CONTEXT_USER_GROUPS", // comma-separated
+  db: "CONTEXT_DB", // store path
+  embeddings: "CONTEXT_EMBEDDINGS", // auto | real | hash
+  "embed-model": "CONTEXT_EMBED_MODEL",
+  "memory-ttl": "CONTEXT_MEMORY_TTL_DAYS",
+  "db-key": "CONTEXT_DB_KEY", // encryption at rest
+  topk: "CONTEXT_TOPK",
+  "llm-url": "CONTEXT_LLM_URL",
+  "llm-model": "CONTEXT_LLM_MODEL",
+  rerank: "CONTEXT_RERANK", // 0 to disable
+}
 const env: Record<string, string> = {}
-if (flag("user-id")) env.CONTEXT_USER_ID = flag("user-id")!
-if (flag("org-id")) env.CONTEXT_ORG_ID = flag("org-id")!
+for (const [f, e] of Object.entries(ENV_FLAGS)) {
+  const v = flag(f)
+  if (v !== undefined) env[e] = v
+}
+if (has("audit")) env.CHITTA_AUDIT = "1" // boolean toggle
+if (has("encrypt") && !env.CONTEXT_DB_KEY) {
+  console.error("--encrypt needs a key: pass --db-key <key> (encryption reads CONTEXT_DB_KEY at runtime).")
+  process.exit(1)
+}
+if (env.CONTEXT_DB_KEY) {
+  console.error(
+    "⚠ security: --db-key writes the encryption key into the tool's MCP config file in plaintext.\n" +
+      "  Restrict that file (chmod 600) or instead set CONTEXT_DB_KEY via your client's secret store.\n" +
+      "  Also install the encrypted driver once: bun add libsql\n",
+  )
+}
 
 const project = has("project")
 const projectDir = resolve(flag("project-dir") ?? ".")
@@ -119,7 +151,18 @@ if (has("list")) {
     const tags = [p.skillGlobal || p.skillProject ? "skill" : "", p.format].filter(Boolean).join(", ")
     console.log(`  ${p.id.padEnd(15)} ${p.label.padEnd(22)} (${tags})`)
   }
-  console.log(`\nUsage: chitta install --platform <id>[,<id>...] | --all   [--project] [--user-id X --org-id Y]`)
+  console.log(`\nUsage: chitta install --platform <id>[,<id>...] | --all   [--project]`)
+  console.log("\nConfiguration flags (baked into the tool's MCP env block):")
+  console.log("  --user-id <id> --org-id <id>     identity (drives ACL)")
+  console.log("  --role <admin|editor|viewer>     --groups <a,b,c>")
+  console.log("  --db <path>                      store location")
+  console.log("  --embeddings <auto|real|hash>    --embed-model <name>")
+  console.log("  --db-key <key>                   encryption at rest (needs `bun add libsql`)")
+  console.log("  --audit                          enable tamper-evident audit logging")
+  console.log("  --memory-ttl <days>              auto-forget dynamic memories after N days")
+  console.log("  --llm-url <url> [--llm-model m]   typed-triple extraction + KGQA via a local LLM")
+  console.log("  --topk <n>   --rerank 0          retrieval breadth / disable reranker")
+  console.log("\nInspect current config any time:  chitta doctor")
   process.exit(0)
 }
 
