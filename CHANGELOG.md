@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-06-29
+
+### Changed
+- **`context_about` is now a complete self-description (the one discovery endpoint).** Its
+  overview previously covered only retrieval + the bi-temporal graph; it now also summarizes
+  the **living-memory layer** (atomic memories, version chains/contradiction resolution,
+  static-vs-dynamic, forgetting + TTL, profiles) and the **security guarantees** (gate-first
+  ACL with zero cross-user/per-edge leak, `<untrusted_memory>` memory-poisoning defense,
+  Trojan-Source sanitization, optional encryption-at-rest + `chitta rekey`, tamper-evident
+  audit). It already auto-lists all 7 tools (from the live registry, so never stale) plus
+  mode/identity/storage/engines/encryption/audit/live counts — so a single `context_about`
+  call now tells a client everything the server can do.
+
 ## [0.1.12] - 2026-06-29
 
 ### Docs
