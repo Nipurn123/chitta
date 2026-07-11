@@ -548,7 +548,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
         .all(`${rec.id}#%`) as Array<{ content: string }>
       const text = chunks.map((c) => c.content).join("\n\n")
       const name = (JSON.parse(rec.data) as { recordName?: string }).recordName
-      if (text) entities += await ingestor.writeGraphFor(rec.id, text, name)
+      if (text) entities += (await ingestor.writeGraphFor(rec.id, text, name)).entities
     }
     return { records: records.length, entities }
   }

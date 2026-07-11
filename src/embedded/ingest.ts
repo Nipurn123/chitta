@@ -224,33 +224,39 @@ export class Ingestor {
     // record --mentions--> entity, entity --relates_to--> entity. Entity ids are
     // shared across docs, so two records that mention "Pro" link through it.
     let entities = 0
+    // Typed triples to fold into the living-memory layer - from the caller's provided graph
+    // OR, now, from the DETERMINISTIC extractor (which emits typed predicates, not just
+    // co-occurrence). Either way they're consolidated identically below - so the memory layer
+    // works with or without an LLM.
+    let typedTriples: Array<{ from: string; to: string; type: string; confidence?: number }> = []
     if (doc.extractGraph !== false) {
-      // If the calling (frontier) model supplied a typed graph, store THAT - precise
-      // triples, no built-in extractor, no separate LLM. Otherwise fall back to the
-      // text/code extractor.
-      entities =
-        doc.entities?.length || doc.relations?.length
-          ? this.writeProvidedGraph(doc.recordId, doc.entities ?? [], doc.relations ?? [])
-          : await this.writeGraphFor(doc.recordId, cleanText, doc.recordName)
+      if (doc.entities?.length || doc.relations?.length) {
+        // The calling model supplied a typed graph - store it precisely, no extractor.
+        entities = this.writeProvidedGraph(doc.recordId, doc.entities ?? [], doc.relations ?? [])
+        typedTriples = doc.relations ?? []
+      } else {
+        // No caller graph → the built-in extractor (deterministic text / tree-sitter code).
+        const g = await this.writeGraphFor(doc.recordId, cleanText, doc.recordName)
+        entities = g.entities
+        typedTriples = g.typed
+      }
     }
 
-    // (5) MEMORIES: the living-memory layer. Consolidate the PRECISE typed triples the
-    // caller supplied into atomic memories (contradiction → new version, dedup, TTL).
-    // We use only the provided typed predicates - the deterministic extractor emits
-    // symmetric "relates_to" co-occurrence, which is graph signal, not an atomic fact.
-    // Inherits this record's ACL via virtualRecordId. No-op when no typed triples given.
-    if (doc.relations?.length) {
-      const typed = doc.relations.filter((r) => (r.type || "").trim().toLowerCase().replace(/\s+/g, "_") !== "relates_to")
-      if (typed.length) {
-        await consolidateTriples(this.store.memories, this.embeddings, typed, {
-          orgId: doc.orgId,
-          virtualRecordId: vid,
-          sourceRecordId: doc.recordId,
-          ttlMs: memoryTtlMs(),
-          resolve: (name) => this.store.resolveEntity(name)?.id ?? null,
-          scopeVids: doc.scopeVids,
-        })
-      }
+    // (5) MEMORIES: the living-memory layer. Consolidate the TYPED triples (caller-supplied
+    // OR deterministically extracted) into atomic memories - contradiction → new version,
+    // dedup, TTL, and supersession for functional predicates (works_at, lives_in…). Symmetric
+    // "relates_to" co-occurrence is excluded (graph signal, not a fact). Inherits this record's
+    // ACL via virtualRecordId. This is the LLM-FREE activation of the living memory.
+    const factTriples = typedTriples.filter((r) => (r.type || "").trim().toLowerCase().replace(/\s+/g, "_") !== "relates_to")
+    if (factTriples.length) {
+      await consolidateTriples(this.store.memories, this.embeddings, factTriples, {
+        orgId: doc.orgId,
+        virtualRecordId: vid,
+        sourceRecordId: doc.recordId,
+        ttlMs: memoryTtlMs(),
+        resolve: (name) => this.store.resolveEntity(name)?.id ?? null,
+        scopeVids: doc.scopeVids,
+      })
     }
 
     // (6) EPISODIC memory: time-anchored experiences. Each actor name is resolved to its
@@ -336,9 +342,14 @@ export class Ingestor {
 
   /** Extract concepts from text (or CODE) and attach them to a record (shared by
    *  ingest and rebuildGraph). Code files (detected from `name`) are parsed with
-   *  tree-sitter; everything else uses the configured text/LLM extractor. Returns
-   *  the number of entities written. */
-  async writeGraphFor(recordId: string, text: string, name?: string): Promise<number> {
+   *  tree-sitter; everything else uses the configured text/LLM extractor. Returns the
+   *  entity count + the TYPED relations (label triples) for the caller to consolidate into
+   *  the living-memory layer - so deterministic ingestion gets memories too. */
+  async writeGraphFor(
+    recordId: string,
+    text: string,
+    name?: string,
+  ): Promise<{ entities: number; typed: Array<{ from: string; to: string; type: string; confidence?: number }> }> {
     // Source-keyed replace (Graphify): if this record was ingested before, drop its
     // prior graph contributions first so facts it no longer asserts are GC'd, weights
     // stay accurate, and re-ingest is idempotent rather than weight-inflating.
@@ -352,8 +363,10 @@ export class Ingestor {
     // variants), and keep a map from the extractor's raw slug id → canonical id so the
     // relation endpoints below resolve to the SAME nodes the mentions were attached to.
     const idMap = new Map<string, string>()
+    const labelBySlug = new Map<string, string>()
     for (const e of entities) {
       const clean = sanitizeLabel(e.label)
+      labelBySlug.set(e.id, clean)
       const res = this.store.resolveEntity(clean, e.type)
       if (!res) continue
       idMap.set(e.id, res.id)
@@ -361,10 +374,11 @@ export class Ingestor {
       this.store.addEdge(recordId, res.id, "mentions", { recordId })
     }
     // Store the TYPED predicate as the edge label (calls/defines/imports for code;
-    // loves/is_a/… for prose). weight ACCUMULATES across re-mentions (frequency≈
+    // works_at/lives_in/… for prose). weight ACCUMULATES across re-mentions (frequency≈
     // confidence); per-edge `confidence` is the EXTRACTED/INFERRED tier; the source
     // record is recorded as provenance so we can trace and supersede a fact later.
     const now = Date.now()
+    const typed: Array<{ from: string; to: string; type: string; confidence?: number }> = []
     for (const r of relations) {
       const label = r.type || "relates_to"
       const from = idMap.get(r.from) ?? entityId(r.from)
@@ -374,7 +388,9 @@ export class Ingestor {
       // Bi-temporal supersession (Graphiti): for a single-valued relation, a newer
       // value closes the prior one - non-destructively (history kept, marked expired).
       if (FUNCTIONAL_PREDICATES.has(label)) this.store.supersedeEdge(from, label, to, now)
+      // Surface typed relations (by LABEL) so ingest can consolidate them into memories.
+      if (label !== "relates_to") typed.push({ from: labelBySlug.get(r.from) ?? r.from, to: labelBySlug.get(r.to) ?? r.to, type: label, confidence: r.confidence })
     }
-    return idMap.size
+    return { entities: idMap.size, typed }
   }
 }
