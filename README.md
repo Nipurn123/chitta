@@ -31,7 +31,7 @@
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-228%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-270%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -149,6 +149,8 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 ```bash
 chitta doctor                      # config + health: identity, encryption, ANN, audit, counts
+chitta sleep                       # sleep-time consolidation: dedupe entities, retire expired, re-weight
+chitta bench synthetic             # measure memory quality (retrieval + end-to-end QA) - see docs/BENCHMARKING.md
 
 # audit log (enable with CHITTA_AUDIT=1)
 chitta audit                       # recent entries (who/what/when)
@@ -195,7 +197,7 @@ model** - the part most memory products treat as proprietary magic, here done na
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 228 tests
+bun test                          # 270 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 
@@ -274,6 +276,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module internals and the se
 ## Docs
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - pipeline, module map, security invariant, extending it
+- [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - measure memory quality (Tier A retrieval + Tier B end-to-end QA; LongMemEval/LoCoMo)
 - [examples/](examples/) - runnable demos
 - [CONTRIBUTING.md](CONTRIBUTING.md) - dev setup and workflow
 - [SECURITY.md](SECURITY.md) - security model and how to report issues

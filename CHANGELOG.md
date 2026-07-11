@@ -82,6 +82,23 @@ semantic versioning once it reaches 1.0.
   - `context_about` now fully self-describes the cognition layer. +5 tests
     (`test/embedded/self-correcting.test.ts`); suite 223 → 228, green.
 
+### Added — benchmarking framework
+
+- **A real memory-benchmark framework** (`src/eval/bench/` + `src/eval/datasets/`, `chitta bench`) -
+  measures memory the way the field does: end-to-end QA over a long history, broken down by reasoning
+  category, not one blended number.
+  - **Tier A** (retrieval, no LLM, deterministic): recall@k / nDCG@k / MRR / P@k **per category**
+    (reuses `metrics.ts`) - isolates "is the memory surfacing the right evidence" from generation.
+  - **Tier B** (end-to-end QA): grounded, abstention-aware LLM answer + **LLM-as-judge**, accuracy per
+    category. Injected as a dependency, so Tier A needs no LLM and tests use deterministic stubs.
+  - **Datasets:** built-in offline `synthetic` (all five LongMemEval categories incl. knowledge-update
+    + temporal), plus `longmemeval` / `locomo` loaders (schemas verified against the source repos),
+    all behind one normalized schema (`DatasetLoader`).
+  - **Efficiency:** context-tokens-per-question vs full-history (token-reduction ratio) + latency.
+  - Scorecard → console / markdown / json. `chitta bench <dataset> [--tier a|b|both] [--k] [--limit]
+    [--path] [--report]`. Docs: `docs/BENCHMARKING.md`. Built via 2 parallel subagents (dataset loaders,
+    Tier-B QA/judge) on disjoint files. +24 tests; suite 246 → **270**, typecheck clean.
+
 ### Fixed / hardened — robustness pass
 
 - **Permission-scoped belief revision (correctness fix).** Memory supersession + contradiction

@@ -19,6 +19,18 @@ function has(flag: string): boolean {
   return process.argv.includes(flag)
 }
 
+// Resolve a benchmark dataset by name. The synthetic set is built-in (offline); the real
+// datasets are loaded from a downloaded JSON via `--path`. The loaders are imported through a
+// VARIABLE specifier so the CLI type-checks whether or not the optional loader files are present.
+async function loadBenchDataset(name: string, opts: { path?: string; limit?: number }) {
+  if (name === "synthetic") return (await import("../eval/datasets/synthetic")).syntheticDataset
+  const spec = name === "longmemeval" ? "../eval/datasets/longmemeval" : name === "locomo" ? "../eval/datasets/locomo" : null
+  if (!spec) throw new Error(`unknown dataset '${name}' (use: synthetic | longmemeval | locomo)`)
+  const mod = await import(spec)
+  const loader = name === "longmemeval" ? mod.longMemEvalLoader : mod.locomoLoader
+  return loader.load(opts)
+}
+
 async function main() {
   const cmd = process.argv[2]
   const dbPath = arg("--db", process.env.CONTEXT_DB ?? "context.db")!
@@ -99,6 +111,43 @@ async function main() {
     return
   }
 
+  // bench: run the memory benchmark framework (Tier A retrieval, + Tier B end-to-end QA when
+  // an LLM is configured). Builds its own per-case contexts, so it needs no shared store.
+  if (cmd === "bench") {
+    const { runBenchmark } = await import("../eval/bench/run")
+    const { renderScorecard, scorecardMarkdown, scorecardJson } = await import("../eval/bench/scorecard")
+    const { scoreQa } = await import("../eval/bench/qa")
+    const { httpBenchLlmFromEnv } = await import("../eval/bench/llm")
+    const name = process.argv[3] && !process.argv[3].startsWith("-") ? process.argv[3] : "synthetic"
+    const tier = arg("--tier", "a") as "a" | "b" | "both"
+    const k = Number(arg("--k", "10"))
+    const limit = arg("--limit") ? Number(arg("--limit")) : undefined
+    const dataset = await loadBenchDataset(name, { path: arg("--path"), limit })
+    const llm = tier !== "a" ? httpBenchLlmFromEnv(arg("--answer-model"), arg("--judge-model")) : null
+    if (tier !== "a" && !llm) console.log("(no CONTEXT_LLM_URL set → Tier B skipped; running Tier A only)\n")
+    const model = process.env.CONTEXT_LLM_MODEL ?? "default"
+    const card = await runBenchmark(
+      dataset,
+      {
+        dataset: name,
+        tier: llm ? tier : "a",
+        k,
+        limitCases: limit,
+        embedder: (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase(),
+        answerModel: llm ? arg("--answer-model") ?? model : undefined,
+        judgeModel: llm ? arg("--judge-model") ?? model : undefined,
+      },
+      { scoreQa, llm: llm ?? undefined },
+    )
+    console.log(has("--json") ? scorecardJson(card) : renderScorecard(card))
+    const report = arg("--report")
+    if (report) {
+      await Bun.write(report, scorecardMarkdown(card))
+      console.log(`\nreport written to ${report}`)
+    }
+    return
+  }
+
   const ctx = buildEmbeddedContext({ path: dbPath })
 
   switch (cmd) {
@@ -170,7 +219,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: doctor | sleep | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | sleep | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }
