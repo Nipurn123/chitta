@@ -18,12 +18,17 @@ export async function ingestCase(
   const t0 = performance.now()
   let fullHistoryTokens = 0
   for (const item of c.history) {
-    fullHistoryTokens += approxTokens(item.text)
+    // Prepend the event/session date to the text so it's part of the SEARCHABLE + ANSWERABLE
+    // memory. Many benchmark answers are dates ("7 May 2023"), which live in session metadata,
+    // not the turn text - dropping them makes every "when" question unanswerable even when the
+    // right turn is retrieved. Real memory systems store WHEN something was said; so must this.
+    const text = item.timestamp ? `(${item.timestamp}) ${item.text}` : item.text
+    fullHistoryTokens += approxTokens(text)
     await ctx.authorizedIngest(userId, {
       recordId: item.id,
       orgId,
       recordName: item.id,
-      text: item.text,
+      text,
       permittedPrincipals: [userId],
       entities: item.entities,
       relations: item.relations,
