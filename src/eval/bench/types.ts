@@ -14,6 +14,8 @@ export interface RunConfig {
   limitCases?: number
   /** reported for reproducibility - a benchmark number is meaningless without its config. */
   embedder: string
+  /** cross-encoder rerank of the fused candidate pool (improves ranking into the top-k). */
+  rerank?: boolean
   answerModel?: string
   judgeModel?: string
 }

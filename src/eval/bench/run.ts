@@ -4,6 +4,7 @@
 // runs Tier A with no LLM, and tests inject deterministic stubs. Returns one Scorecard.
 
 import { buildEmbeddedContext } from "../../embedded/index"
+import { CrossEncoderReranker } from "../../embedded/reranker"
 import type { BenchmarkDataset } from "../datasets/types"
 import type { RunConfig, Scorecard, BenchLlm, ScoreQaFn, RetrievedContext } from "./types"
 import { ingestCase } from "./ingest"
@@ -22,11 +23,13 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
   const fullTokensPerCase: number[] = []
   const ingestMsPerCase: number[] = []
   const retrievalMsPerQuestion: number[] = []
+  // One reranker shared across cases (it caches the cross-encoder model after first load).
+  const reranker = config.rerank ? new CrossEncoderReranker() : undefined
 
   for (const c of cases) {
     // Fresh, isolated memory per case - each case is an independent long history, and this
     // also proves the store starts clean (no cross-case leakage inflating recall).
-    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    const ctx = buildEmbeddedContext({ path: ":memory:", reranker })
     // Distinct user/org ids: both are graph nodes, so identical ids would collide (the org
     // node would clobber the user node under INSERT OR REPLACE). admin ⇒ unrestricted ingest.
     const userId = "bench-user"

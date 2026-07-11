@@ -134,6 +134,7 @@ async function main() {
         k,
         limitCases: limit,
         embedder: (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase(),
+        rerank: has("--rerank"),
         answerModel: llm ? arg("--answer-model") ?? model : undefined,
         judgeModel: llm ? arg("--judge-model") ?? model : undefined,
       },

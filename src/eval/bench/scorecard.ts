@@ -68,7 +68,7 @@ export function renderScorecard(card: Scorecard): string {
   const e = card.efficiency
   const lines = [
     `Chitta benchmark — ${c.dataset}`,
-    `  config       tier=${c.tier}  k=${c.k}  embedder=${c.embedder}${c.answerModel ? `  answer=${c.answerModel}` : ""}${c.judgeModel ? `  judge=${c.judgeModel}` : ""}`,
+    `  config       tier=${c.tier}  k=${c.k}  embedder=${c.embedder}  rerank=${c.rerank ? "on" : "off"}${c.answerModel ? `  answer=${c.answerModel}` : ""}${c.judgeModel ? `  judge=${c.judgeModel}` : ""}`,
     `  scope        ${card.cases} case(s), ${card.questions} question(s)`,
     "",
   ]
@@ -89,7 +89,7 @@ export function scorecardMarkdown(card: Scorecard): string {
   const md: string[] = [
     `## Chitta benchmark — \`${c.dataset}\``,
     "",
-    `**Config:** tier=${c.tier}, k=${c.k}, embedder=${c.embedder}${c.answerModel ? `, answer=${c.answerModel}` : ""}${c.judgeModel ? `, judge=${c.judgeModel}` : ""} · ${card.cases} case(s), ${card.questions} question(s)`,
+    `**Config:** tier=${c.tier}, k=${c.k}, embedder=${c.embedder}, rerank=${c.rerank ? "on" : "off"}${c.answerModel ? `, answer=${c.answerModel}` : ""}${c.judgeModel ? `, judge=${c.judgeModel}` : ""} · ${card.cases} case(s), ${card.questions} question(s)`,
     "",
   ]
   if (card.retrieval) {
