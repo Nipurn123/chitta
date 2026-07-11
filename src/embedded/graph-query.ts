@@ -141,7 +141,7 @@ export class GraphQueryService {
   /** Communities - connected clusters of related entities (Graphify's god-node /
    *  community view), via union-find over live edges. Each cluster's `hub` is its
    *  most-connected member. ACL-scoped. */
-  async communities(userId: string, orgId: string, minSize = 2): Promise<Array<{ size: number; hub: string; members: string[] }>> {
+  async communities(userId: string, orgId: string, minSize = 2): Promise<Array<{ size: number; hub: string; members: string[]; summary: string }>> {
     const { entities, relations, byId, adj } = await this.scope(userId, orgId)
     return detectCommunities(entities, relations, byId, adj, minSize)
   }

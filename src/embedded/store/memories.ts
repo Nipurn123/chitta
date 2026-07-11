@@ -28,7 +28,13 @@ export interface MemoryRow {
   source_record_id: string | null
   created_at: number
   updated_at: number
+  kind: string
+  occurred_at: number | null
+  actor_ids: string
+  confidence: number
 }
+
+export type MemoryKind = "semantic" | "episodic" | "procedural"
 
 export interface NewMemory {
   id: string
@@ -44,6 +50,14 @@ export interface NewMemory {
   rootId?: string | null
   relation?: string | null
   sourceRecordId?: string | null
+  /** Memory typology (default "semantic"). */
+  kind?: MemoryKind
+  /** EVENT time for episodic memories (valid time), distinct from created_at/updated_at. */
+  occurredAt?: number | null
+  /** Canonical entity ids involved (episodic actors/objects). */
+  actorIds?: string[]
+  /** Trust in this fact (0..1); drives confidence-aware belief revision. Default 1. */
+  confidence?: number
 }
 
 export class MemoryRepo {
@@ -63,8 +77,9 @@ export class MemoryRepo {
         `INSERT INTO memories
            (id, org_id, virtual_record_id, subject_key, memory, embedding, is_static,
             is_forgotten, forget_after, forget_reason, version, parent_id, root_id,
-            is_latest, relation, source_record_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
+            is_latest, relation, source_record_id, created_at, updated_at,
+            kind, occurred_at, actor_ids, confidence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         m.id,
@@ -82,6 +97,10 @@ export class MemoryRepo {
         m.sourceRecordId ?? null,
         now,
         now,
+        m.kind ?? "semantic",
+        m.occurredAt ?? null,
+        JSON.stringify(m.actorIds ?? []),
+        m.confidence ?? 1,
       )
   }
 
@@ -125,16 +144,103 @@ export class MemoryRepo {
       .query(
         `SELECT * FROM memories
          WHERE virtual_record_id IN (${ph(accessibleVids.length)})
-           AND is_latest = 1 AND is_forgotten = 0
+           AND kind = 'semantic' AND is_latest = 1 AND is_forgotten = 0
            AND (forget_after IS NULL OR forget_after > ?)
          ORDER BY updated_at DESC`,
       )
       .all(...accessibleVids, now) as MemoryRow[]
   }
 
+  /** Episodic memories the caller may see (time-anchored experiences), newest EVENT first.
+   *  Not versioned/deduped like facts - each episode is a distinct experience; the caller
+   *  ranks by relevance × recency (it holds the query embedding). ACL-scoped like recall. */
+  recallEpisodes(accessibleVids: string[], now = Date.now()): MemoryRow[] {
+    if (accessibleVids.length === 0) return []
+    return this.db
+      .query(
+        `SELECT * FROM memories
+         WHERE virtual_record_id IN (${ph(accessibleVids.length)})
+           AND kind = 'episodic' AND is_forgotten = 0
+           AND (forget_after IS NULL OR forget_after > ?)
+         ORDER BY COALESCE(occurred_at, created_at) DESC`,
+      )
+      .all(...accessibleVids, now) as MemoryRow[]
+  }
+
+  /** Procedural memories the caller may see (learned how-tos / preferences), current only. */
+  recallProcedures(accessibleVids: string[], now = Date.now()): MemoryRow[] {
+    if (accessibleVids.length === 0) return []
+    return this.db
+      .query(
+        `SELECT * FROM memories
+         WHERE virtual_record_id IN (${ph(accessibleVids.length)})
+           AND kind = 'procedural' AND is_latest = 1 AND is_forgotten = 0
+           AND (forget_after IS NULL OR forget_after > ?)
+         ORDER BY updated_at DESC`,
+      )
+      .all(...accessibleVids, now) as MemoryRow[]
+  }
+
+  /** Whether an episode with this subject_key already exists for a record - so re-ingesting
+   *  the same document doesn't duplicate the experience (episodic ingest is idempotent). */
+  hasEpisode(virtualRecordId: string, subjectKey: string): boolean {
+    return !!this.db
+      .query("SELECT 1 FROM memories WHERE virtual_record_id = ? AND subject_key = ? AND kind = 'episodic' LIMIT 1")
+      .get(virtualRecordId, subjectKey)
+  }
+
   /** Full version history of a memory chain (oldest → newest), for "how did this evolve". */
   history(rootId: string): MemoryRow[] {
     return this.db.query("SELECT * FROM memories WHERE root_id = ? ORDER BY version ASC").all(rootId) as MemoryRow[]
+  }
+
+  // ── Temporal reasoning (bi-temporal queries over the version chains) ─────────
+
+  /** Semantic facts as they were believed AS OF transaction-time `t`: for each subject, the
+   *  newest version created at/before t, minus any forgotten at/before t. Reconstructs the
+   *  memory's past state ("what did we believe on <date>"). ACL-scoped. */
+  factsAsOf(accessibleVids: string[], t: number): MemoryRow[] {
+    if (accessibleVids.length === 0) return []
+    const inList = ph(accessibleVids.length)
+    const rows = this.db
+      .query(
+        `SELECT m.* FROM memories m
+         JOIN (SELECT subject_key, MAX(created_at) mc FROM memories
+                 WHERE kind = 'semantic' AND virtual_record_id IN (${inList}) AND created_at <= ?
+                 GROUP BY subject_key) x
+           ON m.subject_key = x.subject_key AND m.created_at = x.mc
+         WHERE m.kind = 'semantic' AND m.virtual_record_id IN (${inList}) AND m.created_at <= ?`,
+      )
+      .all(...accessibleVids, t, ...accessibleVids, t) as MemoryRow[]
+    // Exclude anything that had already been forgotten by t (soft-delete before the cutoff).
+    return rows.filter((r) => !(r.is_forgotten && r.updated_at <= t))
+  }
+
+  /** Every version of every fact where `entityId` is the SUBJECT, oldest → newest - the raw
+   *  material for a "how X changed over time" timeline (includes superseded versions). */
+  subjectHistory(entityId: string, accessibleVids: string[]): MemoryRow[] {
+    if (accessibleVids.length === 0) return []
+    return this.db
+      .query(
+        `SELECT * FROM memories
+         WHERE kind = 'semantic' AND virtual_record_id IN (${ph(accessibleVids.length)}) AND subject_key LIKE ?
+         ORDER BY created_at ASC, version ASC`,
+      )
+      .all(...accessibleVids, `${entityId}|%`) as MemoryRow[]
+  }
+
+  /** Episodes whose actors include `entityId`, oldest EVENT first - the experiences part of
+   *  an entity's timeline. ACL-scoped. (actor_ids is a JSON array of canonical ids.) */
+  episodesForActor(entityId: string, accessibleVids: string[]): MemoryRow[] {
+    if (accessibleVids.length === 0) return []
+    return this.db
+      .query(
+        `SELECT * FROM memories
+         WHERE kind = 'episodic' AND is_forgotten = 0 AND virtual_record_id IN (${ph(accessibleVids.length)})
+           AND actor_ids LIKE ?
+         ORDER BY COALESCE(occurred_at, created_at) ASC`,
+      )
+      .all(...accessibleVids, `%"${entityId}"%`) as MemoryRow[]
   }
 
   /** All memory rows (for reindex when the embedder dimension changes). */
@@ -153,5 +259,15 @@ export class MemoryRepo {
       current: get("SELECT count(*) c FROM memories WHERE is_latest = 1 AND is_forgotten = 0"),
       forgotten: get("SELECT count(*) c FROM memories WHERE is_forgotten = 1"),
     }
+  }
+
+  /** Current count per memory kind (semantic / episodic / procedural) - for discovery/stats. */
+  kinds(): { semantic: number; episodic: number; procedural: number } {
+    const rows = this.db
+      .query("SELECT kind, count(*) c FROM memories WHERE is_latest = 1 AND is_forgotten = 0 GROUP BY kind")
+      .all() as Array<{ kind: string; c: number }>
+    const out = { semantic: 0, episodic: 0, procedural: 0 }
+    for (const r of rows) if (r.kind in out) out[r.kind as keyof typeof out] = r.c
+    return out
   }
 }

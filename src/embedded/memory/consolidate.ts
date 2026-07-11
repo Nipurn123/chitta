@@ -15,6 +15,7 @@ import type { EmbeddingProvider } from "../../provider"
 import type { MemoryRepo, NewMemory } from "../store/memories"
 import { slugify, entityId } from "../extract"
 import { sanitizeText } from "../../security/sanitize"
+import { antonymPredicates } from "./contradiction"
 
 export type MemoryAction = "created" | "updated" | "duplicate"
 
@@ -34,6 +35,8 @@ export interface TripleInput {
   from: string
   to: string
   type: string
+  /** Trust in this triple (0..1). Drives confidence-aware belief revision. Default 1. */
+  confidence?: number
 }
 
 export interface ConsolidateOpts {
@@ -42,6 +45,10 @@ export interface ConsolidateOpts {
   sourceRecordId: string
   /** Default TTL (ms from now) for dynamic memories; omitted ⇒ no expiry. */
   ttlMs?: number
+  /** Canonicalize an entity NAME → its resolved entity id, so a memory's subject_key uses
+   *  the SAME node id as the typed graph (keeps forget-coherence + recall aligned after
+   *  entity resolution). Defaults to entityId(slugify(name)) - the pre-resolution behavior. */
+  resolve?: (name: string) => string | null
 }
 
 function newId(): string {
@@ -52,18 +59,19 @@ function newId(): string {
 export async function consolidateFact(
   repo: MemoryRepo,
   embeddings: EmbeddingProvider,
-  fact: { subjectKey: string; memory: string; functional: boolean; isStatic: boolean },
+  fact: { subjectKey: string; memory: string; functional: boolean; isStatic: boolean; confidence?: number },
   opts: ConsolidateOpts,
 ): Promise<MemoryAction> {
   const current = repo.latestBySubject(fact.subjectKey)
   const forgetAfter = !fact.isStatic && opts.ttlMs ? Date.now() + opts.ttlMs : null
+  const confidence = fact.confidence ?? 1
 
   if (!current) {
     const id = newId()
     const embedding = await embeddings.embedDense(fact.memory)
     const base: NewMemory = {
       id, orgId: opts.orgId, virtualRecordId: opts.virtualRecordId, subjectKey: fact.subjectKey,
-      memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter,
+      memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter, confidence,
       version: 1, parentId: null, rootId: id, relation: null, sourceRecordId: opts.sourceRecordId,
     }
     repo.insert(base)
@@ -84,18 +92,24 @@ export async function consolidateFact(
     const embedding = await embeddings.embedDense(fact.memory)
     repo.insert({
       id, orgId: opts.orgId, virtualRecordId: opts.virtualRecordId, subjectKey: fact.subjectKey,
-      memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter,
+      memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter, confidence,
       version: 1, parentId: null, rootId: id, relation: null, sourceRecordId: opts.sourceRecordId,
     })
     return "created"
   }
+
+  // BELIEF REVISION: a newer value normally supersedes, but a claim that is strictly LESS
+  // confident than the belief we already hold can't overwrite it (weak rumor vs known fact).
+  // We keep the current truth and drop the weaker claim. Equal/greater confidence supersedes
+  // (default confidence is 1 on both sides, so recency wins as before - fully compatible).
+  if (confidence + 1e-9 < current.confidence) return "duplicate"
 
   const id = newId()
   const embedding = await embeddings.embedDense(fact.memory)
   repo.markSuperseded(current.id)
   repo.insert({
     id, orgId: opts.orgId, virtualRecordId: opts.virtualRecordId, subjectKey: fact.subjectKey,
-    memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter,
+    memory: fact.memory, embedding, isStatic: fact.isStatic, forgetAfter, confidence,
     version: current.version + 1, parentId: current.id, rootId: current.root_id ?? current.id,
     relation: "updates", sourceRecordId: opts.sourceRecordId,
   })
@@ -117,16 +131,26 @@ export async function consolidateTriples(
     const to = sanitizeText(t.to).trim()
     const pred = (t.type || "relates_to").trim().toLowerCase().replace(/\s+/g, "_")
     if (!from || !to || !pred) continue
-    const subjId = entityId(slugify(from))
-    const objId = entityId(slugify(to))
+    const subjId = opts.resolve?.(from) ?? entityId(slugify(from))
+    const objId = opts.resolve?.(to) ?? entityId(slugify(to))
     if (!subjId || !objId) continue
     const functional = FUNCTIONAL.has(pred)
     const subjectKey = functional ? `${subjId}|${pred}` : `${subjId}|${pred}|${objId}`
     const memory = `${from} ${pred.replace(/_/g, " ")} ${to}`
+    // SEMANTIC CONTRADICTION: for a multi-valued fact, an opposite-polarity assertion about
+    // the same (subject, object) is a contradiction the functional path can't see (different
+    // predicate ⇒ different subject_key). Retire the older belief so recall returns the new
+    // truth ("likes coffee" → "dislikes coffee"), history kept. Symmetric + conservative.
+    if (!functional) {
+      for (const anti of antonymPredicates(pred)) {
+        const conflict = repo.latestBySubject(`${subjId}|${anti}|${objId}`)
+        if (conflict) repo.forget([conflict.id], `contradicted by "${memory}"`)
+      }
+    }
     const action = await consolidateFact(
       repo,
       embeddings,
-      { subjectKey, memory, functional, isStatic: STATIC.has(pred) },
+      { subjectKey, memory, functional, isStatic: STATIC.has(pred), confidence: t.confidence },
       opts,
     )
     tally[action]++

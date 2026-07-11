@@ -20,6 +20,7 @@ import type { EmbeddingProvider } from "../provider"
 import type { RetrievalResponse } from "../types"
 import { hybridSearch } from "./retrieval/hybrid-retriever"
 import { consolidateTriples } from "./memory/consolidate"
+import { nameMatch, typeBucket, type EntityCandidate } from "./graph/entity-resolution"
 import { cosine } from "./retrieval/passage"
 import { decodeF32 } from "./store/vector-blob"
 import type { SearchTrace } from "./retrieval/trace"
@@ -31,6 +32,35 @@ export interface RecalledMemory {
   isStatic: boolean
   updatedAt: number
   rootId: string
+}
+
+/** A recalled EPISODIC memory - a time-anchored experience, ranked by relevance × recency. */
+export interface RecalledEpisode {
+  event: string
+  occurredAt: number
+  actorIds: string[]
+}
+
+/** A recalled PROCEDURAL memory - a learned how-to / preference (trigger → action). */
+export interface RecalledProcedure {
+  procedure: string
+  version: number
+}
+
+/** One point on a subject's timeline - a fact change or an experience, with when it happened. */
+export interface TimelineEvent {
+  at: number
+  kind: "fact" | "episode"
+  text: string
+  version: number
+  /** True for a fact version that was later superseded or forgotten (no longer current). */
+  superseded: boolean
+}
+
+/** A synthesized higher-order INSIGHT - reflection over the caller's accessible memory. */
+export interface Insight {
+  category: "focus" | "change" | "preference" | "recent"
+  text: string
 }
 
 /** A synthesized, ACL-scoped profile of one subject - the permanent facts, the recent
@@ -81,6 +111,17 @@ export function defaultEmbeddings(): EmbeddingProvider {
   if (mode === "hash" || mode === "local") return new LocalHashEmbeddings()
   if (mode === "real" || mode === "transformers") return new TransformersEmbeddings(model)
   return new AutoEmbeddings(model)
+}
+
+// Choose which of two duplicate entities stays canonical: the better-connected node (more
+// edges = more of the graph already points at it, so re-pointing the other is cheaper and
+// preserves more structure), breaking ties by the lexicographically smaller id so the
+// choice is deterministic. Returns [winnerId, loserId].
+function pickWinner(a: EntityCandidate, c: EntityCandidate, degree: Map<string, number>): [string, string] {
+  const da = degree.get(a.id) ?? 0
+  const dc = degree.get(c.id) ?? 0
+  if (da !== dc) return da > dc ? [a.id, c.id] : [c.id, a.id]
+  return a.id < c.id ? [a.id, c.id] : [c.id, a.id]
 }
 
 export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
@@ -213,6 +254,62 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     }))
   }
 
+  const embedQ = (q: string) => (embeddings.embedQuery ? embeddings.embedQuery(q) : embeddings.embedDense(q))
+
+  // EPISODIC recall - time-anchored experiences ranked by relevance × recency (a recent
+  // experience outweighs an old one of equal semantic match; ACT-R "recency"). ACL-scoped.
+  async function recallEpisodes(query: string, userId: string, orgId: string, limit = 5): Promise<RecalledEpisode[]> {
+    store.memories.sweep()
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const rows = store.memories.recallEpisodes([...new Set(Object.values(accessible))])
+    if (rows.length === 0) return []
+    const qv = await embedQ(query)
+    const now = Date.now()
+    const halfLife = Number(process.env.CONTEXT_EPISODE_HALFLIFE_DAYS ?? 30) * 864e5
+    const floor = Number(process.env.CONTEXT_EPISODE_FLOOR ?? 0.15) // require some semantic
+    const scored = rows                                             // relevance so a recent but
+      .map((r) => {                                                 // unrelated event isn't surfaced
+        const rel = r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) : 0
+        const recency = Math.pow(0.5, Math.max(0, now - (r.occurred_at ?? r.created_at)) / halfLife)
+        return { r, rel, s: 0.7 * rel + 0.3 * recency }
+      })
+      .filter((x) => x.rel >= floor)
+    scored.sort((a, b) => b.s - a.s)
+    return scored.slice(0, limit).map(({ r }) => ({
+      event: r.memory,
+      occurredAt: r.occurred_at ?? r.created_at,
+      actorIds: JSON.parse(r.actor_ids) as string[],
+    }))
+  }
+
+  // PROCEDURAL recall - the learned how-tos / preferences most applicable to the query,
+  // ranked by semantic similarity (current versions only). ACL-scoped.
+  async function recallProcedures(query: string, userId: string, orgId: string, limit = 3): Promise<RecalledProcedure[]> {
+    store.memories.sweep()
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const rows = store.memories.recallProcedures([...new Set(Object.values(accessible))])
+    if (rows.length === 0) return []
+    const qv = await embedQ(query)
+    const floor = Number(process.env.CONTEXT_PROCEDURE_FLOOR ?? 0.15)
+    const scored = rows
+      .map((r) => ({ r, s: r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) : 0 }))
+      .filter((x) => x.s >= floor)
+    scored.sort((a, b) => b.s - a.s)
+    return scored.slice(0, limit).map(({ r }) => ({ procedure: r.memory, version: r.version }))
+  }
+
+  // UNIFIED recall across the memory typology - the current facts (semantic), the relevant
+  // recent experiences (episodic), and the applicable how-tos (procedural). This is the
+  // shape get_context surfaces so the caller sees the full memory, not just facts.
+  async function recall(query: string, userId: string, orgId: string) {
+    const [facts, episodes, procedures] = await Promise.all([
+      recallMemories(query, userId, orgId),
+      recallEpisodes(query, userId, orgId),
+      recallProcedures(query, userId, orgId),
+    ])
+    return { facts, episodes, procedures }
+  }
+
   // Forget memories matching a description (semantic similarity OR substring), within
   // the caller's accessible set only - you can never forget what you can't see. Soft
   // delete (history kept, excluded from recall). Returns the memory texts forgotten.
@@ -272,6 +369,81 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
       .sort((a, b) => b.updated_at - a.updated_at)
       .map((r) => r.memory)
     return { subject: nb?.entity ?? subject, staticFacts, recentFacts, related }
+  }
+
+  // TIMELINE - how a subject evolved: every fact version (with WHEN it became true)
+  // interleaved with the experiences (episodes) involving it, chronologically. This is the
+  // query surface for the bi-temporal store we already keep - "how did X change over time".
+  // ACL-scoped (built only from the caller's accessible memories).
+  async function timeline(subject: string, userId: string, orgId: string): Promise<{ subject: string; events: TimelineEvent[] }> {
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vids = [...new Set(Object.values(accessible))]
+    const eid = store.resolveEntity(subject)?.id ?? entityId(slugify(subject))
+    const node = store.db.query("SELECT data FROM nodes WHERE id = ?").get(eid) as { data: string } | undefined
+    const label = node ? ((JSON.parse(node.data) as { label?: string }).label ?? subject) : subject
+    const facts = store.memories.subjectHistory(eid, vids)
+    const episodes = store.memories.episodesForActor(eid, vids)
+    const events: TimelineEvent[] = [
+      ...facts.map((f) => ({ at: f.created_at, kind: "fact" as const, text: f.memory, version: f.version, superseded: !f.is_latest || !!f.is_forgotten })),
+      ...episodes.map((e) => ({ at: e.occurred_at ?? e.created_at, kind: "episode" as const, text: e.memory, version: 1, superseded: false })),
+    ].sort((a, b) => a.at - b.at)
+    return { subject: label, events }
+  }
+
+  // AS-OF - memory time-travel: the facts as they were BELIEVED at a past transaction time
+  // t (optionally about one subject). Reconstructs the store's prior state from the version
+  // chains - "what did we know about X on <date>". ACL-scoped.
+  async function asOf(t: number, userId: string, orgId: string, subject?: string): Promise<string[]> {
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vids = [...new Set(Object.values(accessible))]
+    let rows = store.memories.factsAsOf(vids, t)
+    if (subject) {
+      const eid = store.resolveEntity(subject)?.id ?? entityId(slugify(subject))
+      rows = rows.filter((r) => r.subject_key.startsWith(`${eid}|`))
+    }
+    return rows.map((r) => r.memory)
+  }
+
+  // REFLECTION - synthesize higher-order INSIGHTS from what the caller can see: the recurring
+  // focus (most-connected entities), facts that CHANGED (version chains), known preferences
+  // (procedural memory), and recent activity (episodes). Computed on-demand per user over the
+  // accessible set, so it is ACL-correct BY CONSTRUCTION - never persisted (a stored insight
+  // could span records with different permissions and leak). Deterministic; no LLM.
+  async function reflect(userId: string, orgId: string, limit = 8): Promise<Insight[]> {
+    const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
+    const vals = [...new Set(Object.values(accessible))]
+    const insights: Insight[] = []
+
+    // Recurring focus: the entities the accessible graph is most built around (by degree).
+    const g = graph.getKnowledgeGraph(vals)
+    const degree = new Map<string, number>()
+    for (const r of g.relations) {
+      degree.set(r.from, (degree.get(r.from) ?? 0) + 1)
+      degree.set(r.to, (degree.get(r.to) ?? 0) + 1)
+    }
+    const labelOf = new Map(g.entities.map((e) => [e.id, e.label] as const))
+    const topFocus = [...degree.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).filter(([, d]) => d >= 2)
+    for (const [id, d] of topFocus) insights.push({ category: "focus", text: `Recurring focus: ${labelOf.get(id) ?? id} (${d} connections)` })
+
+    // Facts that CHANGED over time: single-valued facts now on version ≥ 2 (Meta ← Google).
+    const changed = store.db
+      .query(
+        `SELECT root_id FROM memories WHERE kind = 'semantic' AND is_latest = 1 AND is_forgotten = 0
+           AND version > 1 AND virtual_record_id IN (${vals.map(() => "?").join(",")}) LIMIT 5`,
+      )
+      .all(...vals) as Array<{ root_id: string }>
+    for (const c of changed) {
+      const hist = store.memories.history(c.root_id)
+      if (hist.length >= 2) insights.push({ category: "change", text: `Changed over time: "${hist[0].memory}" → "${hist[hist.length - 1].memory}"` })
+    }
+
+    // Known preferences / how-tos (procedural memory).
+    for (const p of store.memories.recallProcedures(vals).slice(0, 3)) insights.push({ category: "preference", text: `Known preference: ${p.memory}` })
+
+    // Recent activity (episodic memory), newest first.
+    for (const e of store.memories.recallEpisodes(vals).slice(0, 3)) insights.push({ category: "recent", text: `Recently: ${e.memory}` })
+
+    return insights.slice(0, limit)
   }
 
   // Same retrieval, but also returns the pipeline TRACE (for the UI's explainability).
@@ -343,6 +515,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
         orgId: rec.orgId,
         virtualRecordId: rec.vid,
         sourceRecordId: prov[0],
+        resolve: (name) => store.resolveEntity(name)?.id ?? null,
       })
       count += tally.created + tally.updated
     }
@@ -355,6 +528,10 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   async function rebuildGraph(): Promise<{ records: number; entities: number }> {
     store.db.exec("DELETE FROM nodes WHERE coll = 'entities'")
     store.db.exec("DELETE FROM edges WHERE label IN ('mentions','relates_to')")
+    // Clear the alias map too: it is only valid while its canonical nodes exist, and we're
+    // deleting them all. Re-extraction re-derives canonicalization from scratch (the
+    // resolver re-merges surface variants as nodes are recreated record-by-record).
+    store.db.exec("DELETE FROM entity_aliases")
     store.bumpVersion() // raw deletes bypass the facade → invalidate before re-extraction
     const records = store.db.query("SELECT id, data FROM nodes WHERE coll = 'records'").all() as Array<{ id: string; data: string }>
     let entities = 0
@@ -367,6 +544,76 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
       if (text) entities += await ingestor.writeGraphFor(rec.id, text, name)
     }
     return { records: records.length, entities }
+  }
+
+  // Retroactive entity DEDUPE - fold surface-form duplicate entities that predate the
+  // resolver (data ingested before entity resolution existed, or via a path that created
+  // separate nodes) into one canonical each. Only merges pairs the SAME high-precision
+  // rules accept, so it never collapses genuinely distinct entities. The better-connected
+  // (then lexicographically-smaller-id) node wins as canonical, keeping ids stable;
+  // store.mergeEntities re-points edges + memory subject_keys non-destructively. Idempotent
+  // (a second run finds nothing). Returns how many entities were merged away.
+  function dedupeEntities(): number {
+    const ents = store.entities.allEntities()
+    const degree = new Map<string, number>()
+    for (const e of ents) {
+      const d = store.db.query("SELECT count(*) c FROM edges WHERE src = ? OR dst = ?").get(e.id, e.id) as { c: number }
+      degree.set(e.id, d.c)
+    }
+    const alive = new Set(ents.map((e) => e.id))
+    let merged = 0
+    for (const e of ents) {
+      if (!alive.has(e.id)) continue // already merged into another canonical
+      for (const c of store.entities.candidates(e.label, typeBucket(e.type))) {
+        if (c.id === e.id || !alive.has(c.id)) continue
+        if (!nameMatch(e.label, e.type, c.label, c.type).match) continue
+        const [winner, loser] = pickWinner(e, c, degree)
+        store.mergeEntities(loser, winner)
+        alive.delete(loser)
+        degree.set(winner, (degree.get(winner) ?? 0) + (degree.get(loser) ?? 0))
+        merged++
+        if (loser === e.id) break // e itself was merged away → stop pairing it
+      }
+    }
+    return merged
+  }
+
+  // SLEEP-TIME CONSOLIDATION - a background maintenance pass that makes the memory self-
+  // improve offline (the 2025-26 "sleep-time compute" idea, done deterministically): fold
+  // duplicate entities into their canonical (Stage 1), retire expired dynamic memories, and
+  // re-weight record importance by CORROBORATION - a fact many records attest to matters more.
+  // Idempotent (safe to run on a schedule), ACL-agnostic (structural maintenance, not a read).
+  function sleep(): { entitiesMerged: number; memoriesExpired: number; recordsReweighted: number } {
+    const entitiesMerged = dedupeEntities()
+    const memoriesExpired = store.memories.sweep()
+    const recordsReweighted = reweightByCorroboration()
+    return { entitiesMerged, memoriesExpired, recordsReweighted }
+  }
+
+  // Re-weight each record's importance = its immutable write-time base + a bounded boost for
+  // every entity it mentions that MULTIPLE records also mention (corroboration → salience).
+  // Idempotent: the base never moves, the boost is a pure function of the current graph.
+  // Deliberately does NOT bump the data-version (importance is salience data, not ACL/graph
+  // topology - so it can't invalidate the memoized permission view or thrash the cache).
+  function reweightByCorroboration(): number {
+    const mentionCounts = new Map<string, number>()
+    for (const r of store.db.query("SELECT dst, count(*) c FROM edges WHERE label = 'mentions' GROUP BY dst").all() as Array<{ dst: string; c: number }>)
+      mentionCounts.set(r.dst, r.c)
+    const records = store.db.query("SELECT id, data FROM nodes WHERE coll = 'records'").all() as Array<{ id: string; data: string }>
+    const mentionsOf = store.db.query("SELECT dst FROM edges WHERE src = ? AND label = 'mentions'")
+    let n = 0
+    for (const rec of records) {
+      const d = JSON.parse(rec.data) as { importance?: number; importanceBase?: number }
+      const base = d.importanceBase ?? d.importance ?? 1
+      const ments = mentionsOf.all(rec.id) as Array<{ dst: string }>
+      const corroborated = ments.filter((m) => (mentionCounts.get(m.dst) ?? 0) >= 2).length
+      const next = Math.max(0.5, Math.min(3, Number((base + Math.min(0.5, 0.05 * corroborated)).toFixed(3))))
+      if (next !== d.importance || d.importanceBase === undefined) {
+        store.db.query("UPDATE nodes SET data = json_set(json_set(data,'$.importance',?),'$.importanceBase',?) WHERE id = ?").run(next, base, rec.id)
+        n++
+      }
+    }
+    return n
   }
 
   return {
@@ -386,12 +633,20 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     searchWithGraph,
     searchTraced,
     recallMemories,
+    recallEpisodes,
+    recallProcedures,
+    recall,
     forgetMemories,
     memoryHistory,
     buildProfile,
+    timeline,
+    asOf,
+    reflect,
     rebuildMemories,
     reindex,
     rebuildGraph,
+    dedupeEntities,
+    sleep,
   }
 }
 

@@ -4,11 +4,12 @@
 
 import type { EmbeddingProvider } from "../provider"
 import type { SqliteStore, Json } from "./sqlite-store"
-import { DeterministicExtractor, stripBoilerplate, slugify, entityId, type KnowledgeExtractor } from "./extract"
+import { DeterministicExtractor, stripBoilerplate, entityId, type KnowledgeExtractor } from "./extract"
 import { CodeExtractor } from "./code-extractor"
 import { guardIngest } from "../security/limits"
 import { sanitizeBody, sanitizeLabel } from "../security/sanitize"
 import { consolidateTriples } from "./memory/consolidate"
+import { recordEpisodes, recordProcedures } from "./memory/experience"
 
 // Optional default TTL for dynamic memories (CONTEXT_MEMORY_TTL_DAYS). Unset ⇒ memories
 // never auto-expire; set ⇒ non-static memories get a forget_after and the TTL sweep
@@ -16,6 +17,24 @@ import { consolidateTriples } from "./memory/consolidate"
 function memoryTtlMs(): number | undefined {
   const days = Number(process.env.CONTEXT_MEMORY_TTL_DAYS ?? 0)
   return days > 0 ? days * 24 * 60 * 60 * 1000 : undefined
+}
+
+// Cues that a record is consequential (decisions, commitments, money, people moves). Used
+// to seed importance so the salience/decay re-ranker (which reads record `importance`, and
+// until now only ever saw the default 1) can actually surface what matters.
+const IMPORTANCE_CUES =
+  /\b(decid|decision|important|critical|must|deadline|contract|signed?|launch|hir(e|ed|ing)|fir(e|ed)|acquir|merg|raised?|funding|deal|urgent|priority|confidential|strategy|roadmap|commit|agree|approv|budget|revenue)\b/i
+
+// Deterministic write-time importance (0.5..3, default ~1): denser typed knowledge, more
+// entities, experiential content (episodes/procedures), and consequential cue words all
+// raise it. Bounded so nothing dominates. Stored on the record node → feeds salience.
+export function computeImportance(doc: IngestDoc): number {
+  const typed = (doc.relations ?? []).filter((r) => (r.type || "").trim().toLowerCase().replace(/\s+/g, "_") !== "relates_to").length
+  const ents = (doc.entities ?? []).length
+  const experiential = (doc.episodes?.length ?? 0) + (doc.procedures?.length ?? 0)
+  const cue = IMPORTANCE_CUES.test(doc.text) ? 0.5 : 0
+  const imp = 1 + Math.min(0.8, 0.12 * typed) + Math.min(0.3, 0.05 * ents) + Math.min(0.5, 0.2 * experiential) + cue
+  return Math.max(0.5, Math.min(3, Number(imp.toFixed(3))))
 }
 
 export interface IngestDoc {
@@ -41,6 +60,11 @@ export interface IngestDoc {
    *  separate LLM endpoint needed. */
   entities?: Array<{ name: string; type?: string }>
   relations?: Array<{ from: string; to: string; type: string; confidence?: number }>
+  /** Time-anchored experiences → EPISODIC memory. `actors` are entity names (resolved to
+   *  canonical ids + linked into the graph); `occurredAt` is the event time (ms or date). */
+  episodes?: Array<{ event: string; occurredAt?: number | string; actors?: string[] }>
+  /** Learned how-tos / preferences → PROCEDURAL memory (trigger → action; supersede on change). */
+  procedures?: Array<{ trigger?: string; action: string }>
 }
 
 /** Structure-aware chunker. The old greedy-merge packed many DISTINCT facts into one
@@ -151,6 +175,7 @@ export class Ingestor {
     const text = sanitizeBody(doc.text)
     const recordName = sanitizeLabel(doc.recordName)
     const vid = doc.virtualRecordId ?? doc.recordId
+    const importance = computeImportance(doc) // write-time salience seed (kept as the base)
 
     // (1) GRAPH: the record node.
     this.store.addNode(doc.recordId, "records", {
@@ -164,6 +189,8 @@ export class Ingestor {
       indexingStatus: "COMPLETED",
       ownerId: doc.ownerId, // creator - used for write/delete authorization
       createdAt: Date.now(), // memory recency baseline (decay/salience re-ranking)
+      importance, // live salience weight (decay re-ranker input; sleep may re-weight it)
+      importanceBase: importance, // immutable write-time seed → keeps sleep re-weight idempotent
     })
 
     // (2) GRAPH: permission edges (the ACL) - captured from the source at ingest.
@@ -217,11 +244,50 @@ export class Ingestor {
           virtualRecordId: vid,
           sourceRecordId: doc.recordId,
           ttlMs: memoryTtlMs(),
+          resolve: (name) => this.store.resolveEntity(name)?.id ?? null,
         })
       }
     }
 
+    // (6) EPISODIC memory: time-anchored experiences. Each actor name is resolved to its
+    // CANONICAL entity (Stage 1) - creating the node + a mention edge when new - so the
+    // episode is stitched into the SAME graph the facts live in (enables "the last time I
+    // spoke with Sarah"). Inherits this record's ACL via virtualRecordId. Idempotent.
+    if (doc.episodes?.length) {
+      const eps = doc.episodes.map((e) => ({
+        event: e.event,
+        occurredAt: e.occurredAt,
+        actorIds: (e.actors ?? []).map((n) => this.ensureEntity(doc.recordId, n)).filter((x): x is string => !!x),
+      }))
+      await recordEpisodes(this.store.memories, this.embeddings, eps, {
+        orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId, ttlMs: memoryTtlMs(),
+      })
+    }
+
+    // (7) PROCEDURAL memory: learned how-tos / preferences (trigger → action). A new action
+    // for the same trigger supersedes the old one (history kept), like a functional fact.
+    if (doc.procedures?.length) {
+      await recordProcedures(
+        this.store.memories,
+        this.embeddings,
+        doc.procedures.map((p) => ({ trigger: p.trigger ?? "", action: p.action })),
+        { orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId },
+      )
+    }
+
     return { recordId: doc.recordId, chunks: chunks.length, entities }
+  }
+
+  /** Resolve a free-text name to its CANONICAL entity id, creating the node (when new) and
+   *  a mention edge from the record. Shared by episodic-actor linking; the graph write
+   *  paths keep their own dedup-tracked variants. Returns undefined for unresolvable names. */
+  private ensureEntity(recordId: string, name: string, type?: string): string | undefined {
+    const clean = sanitizeLabel(name)
+    const res = this.store.resolveEntity(clean, type)
+    if (!res) return undefined
+    if (res.isNew) this.store.addNode(res.id, "entities", { label: clean, type: type ?? "ENTITY" })
+    this.store.addEdge(recordId, res.id, "mentions", { recordId })
+    return res.id
   }
 
   /** Store a TYPED graph supplied by the calling model (the frontier LLM that read
@@ -236,14 +302,20 @@ export class Ingestor {
   ): number {
     this.store.clearRecordContributions(recordId)
     const added = new Set<string>()
+    // Every surface form is CANONICALIZED before it becomes a node: the resolver folds
+    // "Sarah" / "Sarah Chen" / "Ms. Chen" onto one id (recording aliases), so the graph
+    // stops fragmenting. We create the node only when the entity is genuinely new; an
+    // existing canonical already has its (label-upgraded) node.
     const addEntity = (name: string, type?: string) => {
-      const slug = slugify(name)
-      if (!slug || added.has(slug)) return slug && entityId(slug)
-      added.add(slug)
-      const id = entityId(slug)
-      this.store.addNode(id, "entities", { label: sanitizeLabel(name), type: type ?? "ENTITY" })
-      this.store.addEdge(recordId, id, "mentions", { recordId })
-      return id
+      const clean = sanitizeLabel(name)
+      const res = this.store.resolveEntity(clean, type)
+      if (!res) return undefined
+      if (!added.has(res.id)) {
+        added.add(res.id)
+        if (res.isNew) this.store.addNode(res.id, "entities", { label: clean, type: type ?? "ENTITY" })
+        this.store.addEdge(recordId, res.id, "mentions", { recordId })
+      }
+      return res.id
     }
     for (const e of ents) addEntity(e.name, e.type)
     const now = Date.now()
@@ -272,10 +344,17 @@ export class Ingestor {
     const lang = CodeExtractor.detectLanguage(name)
     const extractor = lang ? this.codeExtractor : this.extractor
     const { entities, relations } = await extractor.extract(text, { name, language: lang ?? undefined })
+    // Canonicalize every extracted entity to its resolved id (folding surface-form
+    // variants), and keep a map from the extractor's raw slug id → canonical id so the
+    // relation endpoints below resolve to the SAME nodes the mentions were attached to.
+    const idMap = new Map<string, string>()
     for (const e of entities) {
-      const id = entityId(e.id)
-      this.store.addNode(id, "entities", { label: sanitizeLabel(e.label), type: e.type })
-      this.store.addEdge(recordId, id, "mentions", { recordId })
+      const clean = sanitizeLabel(e.label)
+      const res = this.store.resolveEntity(clean, e.type)
+      if (!res) continue
+      idMap.set(e.id, res.id)
+      if (res.isNew) this.store.addNode(res.id, "entities", { label: clean, type: e.type })
+      this.store.addEdge(recordId, res.id, "mentions", { recordId })
     }
     // Store the TYPED predicate as the edge label (calls/defines/imports for code;
     // loves/is_a/… for prose). weight ACCUMULATES across re-mentions (frequency≈
@@ -284,13 +363,14 @@ export class Ingestor {
     const now = Date.now()
     for (const r of relations) {
       const label = r.type || "relates_to"
-      const from = entityId(r.from)
-      const to = entityId(r.to)
+      const from = idMap.get(r.from) ?? entityId(r.from)
+      const to = idMap.get(r.to) ?? entityId(r.to)
+      if (from === to) continue // canonicalization can fold both endpoints onto one node
       this.store.addEdge(from, to, label, { recordId, validAt: now, confidence: r.confidence })
       // Bi-temporal supersession (Graphiti): for a single-valued relation, a newer
       // value closes the prior one - non-destructively (history kept, marked expired).
       if (FUNCTIONAL_PREDICATES.has(label)) this.store.supersedeEdge(from, label, to, now)
     }
-    return entities.length
+    return idMap.size
   }
 }

@@ -11,6 +11,8 @@ import { contextProfileTool } from "./context-profile"
 import { contextGraphTool } from "./context-graph"
 import { contextRebuildTool } from "./context-rebuild"
 import { contextRelateTool } from "./context-relate"
+import { contextTimelineTool } from "./context-timeline"
+import { contextReflectTool } from "./context-reflect"
 import { contextAboutTool, setAboutToolList } from "./context-about"
 import type { ToolModule, ToolResult, ToolSchema } from "./types"
 
@@ -22,6 +24,8 @@ const ALL: ToolModule[] = [
   contextGraphTool,
   contextRebuildTool,
   contextRelateTool,
+  contextTimelineTool,
+  contextReflectTool,
   contextAboutTool,
 ]
 

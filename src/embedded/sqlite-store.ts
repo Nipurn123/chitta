@@ -20,6 +20,8 @@ import * as fts from "./store/fts"
 import { ChunkRepo } from "./store/chunks"
 import { MemoryRepo } from "./store/memories"
 import { AuditRepo } from "./store/audit"
+import { EntityAliasRepo } from "./store/entities"
+import { resolveCanonical, type Resolution, type ResolveOptions } from "./graph/entity-resolution"
 import * as salience from "./store/salience"
 
 export type Json = Record<string, unknown>
@@ -30,6 +32,7 @@ export class SqliteStore {
   readonly ftsEnabled: boolean
   readonly memories: MemoryRepo
   readonly audit: AuditRepo
+  readonly entities: EntityAliasRepo
   private readonly chunks: ChunkRepo
   // Monotonic data version - bumped on every mutation of the nodes/edges (the graph + ACL).
   // The graph provider memoizes its two expensive ACL/graph lookups against this, so a
@@ -77,6 +80,26 @@ export class SqliteStore {
     this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, encrypted)
     this.memories = new MemoryRepo(this.db)
     this.audit = new AuditRepo(this.db)
+    this.entities = new EntityAliasRepo(this.db)
+  }
+
+  // ── Entity resolution / coreference ─────────────────────────────────────
+  // Decide the ONE canonical entity id a surface form belongs to (folding "Sarah" /
+  // "Sarah Chen" / "Ms. Chen" into one), recording aliases so the next mention is O(1).
+  // Does not create the node - the caller writes it under the returned id + label. Bumps
+  // the data version because an alias/label change can alter the graph the provider
+  // memoizes (labels) and future resolution.
+  resolveEntity(name: string, type?: string, opts?: ResolveOptions): Resolution | null {
+    const r = resolveCanonical(this.entities, name, type, opts)
+    if (r) this.bumpVersion()
+    return r
+  }
+
+  // Fold two already-separate canonicals into one (backfill dedupe of pre-existing data).
+  mergeEntities(loser: string, winner: string): number {
+    const n = this.entities.mergeEntities(loser, winner)
+    this.bumpVersion()
+    return n
   }
 
   // ── Graph: nodes & edges ────────────────────────────────────────────────

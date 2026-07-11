@@ -1,6 +1,6 @@
 {
   "name": "@100xprompt/chitta",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "sqlite-vec": "^0.1.9",
@@ -13,14 +13,14 @@
     "typescript": "^5.6.0"
   },
   "bin": {
-    "chitta": "./src/bin.ts"
+    "chitta": "./dist/bin.js"
   },
   "description": "Chitta - permission-aware memory for AI agents: a knowledge-graph + vector memory MCP server with per-user access control. Runs on Bun. By 100xprompt.",
   "engines": {
     "bun": ">=1.0.0"
   },
   "files": [
-    "src",
+    "dist",
     "assets",
     "README.md",
     "LICENSE"

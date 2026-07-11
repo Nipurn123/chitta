@@ -61,7 +61,12 @@ Every stage is a single module behind an interface. Data flows as plain objects 
 | `kgqa-service.ts` | Answer a question with the exact fact from the typed graph, not a ranked blob |
 | `reranker.ts` | Cross-encoder rerank - the final, highest-precision retrieval stage |
 | `authorizer.ts` | Write-side access control - the mutation counterpart to the read ACL |
-| `cli.ts` / `personal.ts` / `demo.ts` | Runnable entry points: standalone CLI, persistent personal context, single-binary demo |
+| `graph/entity-resolution.ts` + `store/entities.ts` | **Entity resolution / coreference** - canonicalize surface-form variants ("Sarah"/"Sarah Chen") to one id (alias table + non-destructive merge) so the graph doesn't fragment |
+| `memory/consolidate.ts` | Semantic facts → atomic memories: contradiction → version chain, **confidence-aware** belief revision |
+| `memory/experience.ts` | **Episodic** memory (time-anchored events + actors + event-time) and **procedural** memory (trigger → action) |
+| `memory/contradiction.ts` | **Semantic contradiction** detection (antonym table + negation) beyond single-valued predicates |
+| `index.ts` cognition fns | `timeline`/`asOf` (temporal), `reflect` (insight synthesis), `dedupeEntities`/`sleep` (sleep-time consolidation) |
+| `cli.ts` / `personal.ts` / `demo.ts` | Runnable entry points: standalone CLI (`ingest`/`query`/`sleep`/`doctor`…), persistent personal context, single-binary demo |
 
 ### MCP surface (`src/mcp/`)
 
@@ -82,12 +87,14 @@ Every stage is a single module behind an interface. Data flows as plain objects 
 
 | Tool | Does |
 |---|---|
-| `context_ingest` | Store text → record node + permission edges (ACL) + vector chunks + concept graph + atomic memories |
-| `get_context` | Retrieve ranked, cited, permission-filtered snippets + current (contradiction-resolved) memory |
+| `context_ingest` | Store text → record node + permission edges (ACL) + vector chunks + concept graph + atomic memories (semantic facts, **episodic** experiences, **procedural** how-tos) |
+| `get_context` | Retrieve ranked, cited, permission-filtered snippets + current (contradiction-resolved) facts + relevant experiences + applicable preferences |
 | `context_forget` | Forget memories no longer true/wanted (soft-delete, ACL-scoped) |
 | `context_profile` | Profile a person/org/entity: permanent + recent facts + connections |
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
-| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
+| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central / communities with summaries) |
+| `context_timeline` | Reason over time: how a subject evolved, or the facts believed **as of** a past date (bi-temporal) |
+| `context_reflect` | Synthesize higher-order insight: recurring focus, what changed, preferences, recent activity |
 | `context_about` | Describe the server's mode, engines, config, and live counts |
 
 ## Storage schema (local mode)
@@ -96,10 +103,11 @@ One file at `$CONTEXT_DB` or `~/.local/share/100xprompt/context.db`:
 
 | Table | Holds |
 |---|---|
-| `nodes` | Graph vertices - records, users, orgs, **entities** |
+| `nodes` | Graph vertices - records (with write-time `importance`), users, orgs, **entities** |
 | `edges` | Relationships - `permissions`, `belongsTo`, `mentions`, `relates_to` (bi-temporal) |
+| `entity_aliases` | Surface-form slug → canonical entity id (coreference resolution / de-fragmentation) |
 | `chunks` | Text + embedding vectors (compact Float32 BLOB) |
-| `memories` | Atomic facts - version chains (contradiction → supersede), forgetting, static/dynamic |
+| `memories` | Atomic memories - `kind` (semantic/episodic/procedural), version chains (contradiction → supersede), `confidence` (belief revision), `occurred_at` (event time) + `actor_ids` (episodic), forgetting, static/dynamic |
 | `audit` | Append-only, hash-chained access log (opt-in via `CHITTA_AUDIT`) |
 | `vec_chunks` / `vec_native` | ANN index - sqlite-vec `vec0` (plaintext) or libSQL native DiskANN (encrypted) |
 
@@ -123,7 +131,7 @@ Every read goes through the ACL graph **before** the vector index is touched: th
 Tests live under `test/`, mirroring `src/`. Run:
 
 ```bash
-bun test test/        # 123 tests across 25 files
+bun test test/        # 228 tests across 41 files
 ```
 
 All tests are self-contained - no external network calls; the MCP test spawns the real server over stdio and talks to it with the standard MCP client.

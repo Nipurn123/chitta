@@ -6,6 +6,82 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added — Deep-memory program (cognition layer)
+
+- **Stage 1 — Canonical graph (entity resolution / coreference).** Entity ids were
+  `slugify(name)`, so "Sarah", "Sarah Chen" and "Ms. Chen" fragmented into three separate
+  nodes — silently corrupting every graph query, profile, and memory subject_key. New
+  canonicalization layer decides the ONE canonical entity id a surface form belongs to:
+  - `graph/entity-resolution.ts` — pure, deterministic, **high-precision** matching:
+    normalized equality (legal-suffix / honorific / punctuation folding), acronym ↔
+    expansion ("IBM" ↔ "International Business Machines"), transposition-aware (Damerau)
+    typo matching, and **type-gated** name containment ("Sarah" ⊆ "Sarah Chen" merges only
+    for PERSON, never for concepts/products — so "100X Pro" vs "100X Flash" stay distinct).
+    A PERSON is never merged into an ORG. Embeddings can only *confirm* a plausible string
+    signal, never trigger a merge alone (keeps the offline path deterministic).
+  - `store/entities.ts` — an `entity_aliases` table (O(1) fast path per surface form) +
+    `mergeEntities` that folds two already-separate canonicals **non-destructively**:
+    re-points edges (weights accumulate, provenance unions, a fact live on either side
+    stays live) and rewrites memory `subject_key`s (reconciling any is_latest collision).
+  - Threaded through **both** the graph write path (`ingest.ts`) **and** the living-memory
+    subject keys (`consolidate.ts`) so they share canonical ids — which means a
+    contradiction asserted under a *different surface form* now correctly supersedes
+    (works_at: "Sarah Chen"→Meta, then "Sarah"→OpenAI resolves to one fact).
+  - `dedupeEntities()` — a retroactive, idempotent backfill pass to canonicalize
+    pre-resolution data. Labels converge upward to the most specific surface form.
+  - +9 tests (`test/embedded/entity-resolution.test.ts`); full suite 205 → 214, green.
+
+- **Stage 2 — Memory typology (episodic + procedural).** The store held only timeless
+  SEMANTIC facts. Added the other two human memory kinds, in the same ACL-scoped table
+  (`kind` column, migrated idempotently; existing rows default to `semantic`):
+  - **Episodic** — time-anchored experiences ("met Sarah at the Anthropic office on
+    2026-07-01"). A distinct `occurred_at` **event-time** axis (separate from ingestion
+    time → memories are now bi-temporal), and `actor_ids` linking each episode to the
+    **canonical entities** from Stage 1 (so "the last time I spoke with Sarah" resolves
+    Sarah → her node → her episodes). Each episode is distinct — never superseded — and is
+    recalled by **relevance × recency** (ACT-R). Idempotent per record.
+  - **Procedural** — learned how-tos / preferences (trigger → action); a new action for the
+    same trigger **supersedes** (versioned, history kept), like a functional fact.
+  - `memory/experience.ts` engine; `store/memories.ts` gains kind-scoped `recallEpisodes` /
+    `recallProcedures` / per-kind `kinds()` counts; ingest steps (6)/(7) create them.
+  - MCP: `context_ingest` accepts `episodes` + `procedures`; `get_context` surfaces
+    "Relevant experiences" + "Applicable how-tos / preferences" sections; stats report
+    per-kind counts. +4 tests (`test/embedded/experience.test.ts`); suite 214 → 218, green.
+
+- **Stage 3 — Reflection + temporal reasoning.** The store was bi-temporal but had no way to
+  *query* time, and rolled facts up but never *reflected*:
+  - **Temporal query surface** over the version chains: `factsAsOf` (memory time-travel -
+    the beliefs held at a past transaction time), `subjectHistory` + `episodesForActor`
+    → `timeline(subject)` (how X evolved: every fact change interleaved with the experiences
+    involving it, chronological, superseded versions marked).
+  - **Reflection** (`reflect`) — deterministic, ACL-scoped insight synthesis: recurring focus
+    (most-connected entities), what CHANGED (version chains), known preferences (procedural),
+    recent activity (episodic). Computed on-demand per user over the accessible set, so it is
+    ACL-correct by construction and never persisted (a stored insight could span records with
+    different permissions).
+  - **GraphRAG community summaries** — every cluster now carries a human-readable summary
+    (hub + top members + the predicates that bind it), surfaced by `context_relate communities`.
+  - MCP: new `context_timeline` (timeline / as-of) and `context_reflect` tools (10 total).
+    +5 tests (`test/embedded/temporal.test.ts`); suite 218 → 223, green.
+
+- **Stage 4 — Self-correcting memory.** The store now maintains its own truth:
+  - **Importance scoring at write** — `computeImportance` seeds each record's salience from
+    typed-knowledge density, entity count, experiential content, and consequential cue words
+    (the decay/salience re-ranker read `importance` but only ever saw the default 1).
+  - **Confidence-aware belief revision** — memories carry a `confidence`; a newer functional
+    value supersedes only when it's at least as confident, so a weak rumor can't overwrite a
+    high-confidence belief (defaults keep recency-wins behavior, fully compatible).
+  - **Semantic contradiction detection** (`memory/contradiction.ts`) — opposite-polarity
+    facts about the same (subject, object) that functional supersession can't catch
+    ("likes" vs "dislikes", or negated "no_longer_likes") retire the older belief. An
+    explicit antonym table + negation normalization — deterministic, never fires on merely
+    different facts.
+  - **Sleep-time consolidation** (`ctx.sleep()`, `chitta sleep`) — an idempotent background
+    pass that dedupes entities (Stage 1), retires expired dynamic memories, and re-weights
+    record importance by CORROBORATION (a fact many records attest to matters more).
+  - `context_about` now fully self-describes the cognition layer. +5 tests
+    (`test/embedded/self-correcting.test.ts`); suite 223 → 228, green.
+
 ## [0.1.13] - 2026-06-29
 
 ### Changed

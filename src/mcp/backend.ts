@@ -22,6 +22,8 @@ export interface BackendStats {
   relations: number
   /** Living-memory layer counts (local mode). */
   memories?: { total: number; current: number; forgotten: number }
+  /** Current count per memory kind - semantic facts / episodic events / procedural how-tos. */
+  memoryKinds?: { semantic: number; episodic: number; procedural: number }
 }
 
 export interface ExactAnswer {
@@ -54,12 +56,24 @@ export interface ContextBackend {
   /** Living memory: the CURRENT truth (latest version, not forgotten) for a query,
    *  ACL-scoped. Each item carries its version so callers can show what evolved. */
   recallMemories?: (q: string, limit?: number) => Promise<Array<{ memory: string; version: number; isStatic: boolean }>>
+  /** Episodic recall: time-anchored experiences relevant to the query (relevance × recency). */
+  recallEpisodes?: (q: string, limit?: number) => Promise<Array<{ event: string; occurredAt: number }>>
+  /** Procedural recall: the learned how-tos / preferences most applicable to the query. */
+  recallProcedures?: (q: string, limit?: number) => Promise<Array<{ procedure: string }>>
   /** Forget memories matching a description (within the caller's accessible set).
    *  Soft-delete; returns the memory texts that were forgotten. */
   forget?: (q: string, reason?: string) => Promise<string[]>
   /** Synthesized, ACL-scoped profile of a subject: permanent facts, recent facts, and
    *  most-connected entities. Null when nothing is known about it. */
   profile?: (subject: string) => Promise<{ subject: string; staticFacts: string[]; recentFacts: string[]; related: string[] } | null>
+  /** How a subject evolved over time - fact changes + experiences, chronological. Local only. */
+  timeline?: (
+    subject: string,
+  ) => Promise<{ subject: string; events: Array<{ at: number; kind: "fact" | "episode"; text: string; version: number; superseded: boolean }> }>
+  /** The facts BELIEVED as of a past time (memory time-travel), optionally about a subject. Local. */
+  asOf?: (t: number, subject?: string) => Promise<string[]>
+  /** Reflection: synthesized higher-order insights over the caller's accessible memory. Local. */
+  reflect?: () => Promise<Array<{ category: string; text: string }>>
   ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
@@ -139,8 +153,22 @@ export function resolveBackend(): ContextBackend {
       const mems = await ctx.recallMemories(q, ctx.userId, ctx.orgId, limit && limit > 0 ? limit : 8)
       return mems.map((m) => ({ memory: m.memory, version: m.version, isStatic: m.isStatic }))
     },
+    // Episodic experiences (time-anchored), ranked by relevance × recency, ACL-scoped.
+    recallEpisodes: async (q, limit) => {
+      const eps = await ctx.recallEpisodes(q, ctx.userId, ctx.orgId, limit && limit > 0 ? limit : 5)
+      return eps.map((e) => ({ event: e.event, occurredAt: e.occurredAt }))
+    },
+    // Procedural how-tos / preferences most applicable to the query, ACL-scoped.
+    recallProcedures: async (q, limit) => {
+      const ps = await ctx.recallProcedures(q, ctx.userId, ctx.orgId, limit && limit > 0 ? limit : 3)
+      return ps.map((p) => ({ procedure: p.procedure }))
+    },
     forget: (q, reason) => ctx.forgetMemories(q, ctx.userId, ctx.orgId, reason),
     profile: (subject) => ctx.buildProfile(subject, ctx.userId, ctx.orgId),
+    // Temporal reasoning + reflection (bi-temporal query surface + insight synthesis), ACL-scoped.
+    timeline: (subject) => ctx.timeline(subject, ctx.userId, ctx.orgId),
+    asOf: (t, subject) => ctx.asOf(t, ctx.userId, ctx.orgId, subject),
+    reflect: () => ctx.reflect(ctx.userId, ctx.orgId),
     ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })
@@ -167,6 +195,7 @@ export function resolveBackend(): ContextBackend {
       entities: count("SELECT count(*) c FROM nodes WHERE coll = 'entities'"),
       relations: count("SELECT count(*) c FROM edges WHERE label = 'relates_to'"),
       memories: ctx.store.memories.counts(),
+      memoryKinds: ctx.store.memories.kinds(),
     }),
     // Tamper-evident audit log, opt-in via CHITTA_AUDIT (off by default → personal use
     // stays zero-overhead and private). Failures never affect the tool call.

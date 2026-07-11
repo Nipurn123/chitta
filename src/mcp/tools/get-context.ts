@@ -78,6 +78,31 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     }
   }
 
+  // (2c) PROCEDURAL memory: the learned how-tos / preferences applicable to this query
+  // ("the user wants TypeScript, no comments"). Surfaces broadly because a preference
+  // should shape the response even when the query doesn't ask for it directly.
+  let procedures = ""
+  if (backend.recallProcedures) {
+    const ps = await backend.recallProcedures(query, 3)
+    if (ps.length) {
+      const body = ps.map((p) => `• ${sanitizeText(p.procedure)}`).join("\n")
+      procedures = `Applicable how-tos / preferences (procedural memory):\n${body}`
+    }
+  }
+
+  // (2d) EPISODIC memory: the relevant recent EXPERIENCES (what happened, when) - distinct
+  // from timeless facts. Powers "the last time we…", "what happened with…".
+  let episodes = ""
+  if (backend.recallEpisodes) {
+    const eps = await backend.recallEpisodes(query, 5)
+    if (eps.length) {
+      const body = eps
+        .map((e) => `• ${sanitizeText(e.event)} (${new Date(e.occurredAt).toISOString().slice(0, 10)})`)
+        .join("\n")
+      episodes = `Relevant experiences (episodic memory):\n${body}`
+    }
+  }
+
   // (3) Full ranked recall (vector + BM25 + GraphRAG), breadth-aware.
   const res = await backend.query(query, limit)
   const recalled =
@@ -85,7 +110,7 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
       ? renderRecalled(res.searchResults.map((r) => ({ content: r.content, source: r.metadata.recordName ?? "untitled" })))
       : ""
 
-  const sections = [highlight, memories, graphFacts, recalled].filter(Boolean)
+  const sections = [highlight, memories, procedures, episodes, graphFacts, recalled].filter(Boolean)
   let text: string
   if (sections.length) text = sections.join("\n\n---\n\n")
   else

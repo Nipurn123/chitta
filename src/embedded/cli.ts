@@ -86,6 +86,19 @@ async function main() {
     return
   }
 
+  // sleep: sleep-time consolidation over the REAL personal store (same DB the MCP server
+  // serves) - dedupe entities, retire expired memories, re-weight importance by corroboration.
+  if (cmd === "sleep") {
+    const { personalContext } = await import("./personal")
+    const ctx = personalContext()
+    const r = ctx.sleep()
+    console.log(
+      `sleep-time consolidation: ${r.entitiesMerged} entit(ies) merged · ${r.memoriesExpired} memor(ies) expired · ${r.recordsReweighted} record(s) re-weighted`,
+    )
+    ctx.store.close()
+    return
+  }
+
   const ctx = buildEmbeddedContext({ path: dbPath })
 
   switch (cmd) {
@@ -157,7 +170,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: doctor | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | sleep | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }

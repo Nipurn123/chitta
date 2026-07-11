@@ -39,10 +39,9 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     return { content: [{ type: "text", text }] }
   }
   if (a.mode === "communities") {
-    const cs = (await gq.communities()) as Array<{ size: number; hub: string; members: string[] }>
+    const cs = (await gq.communities()) as Array<{ size: number; hub: string; members: string[]; summary: string }>
     const text = cs.length
-      ? "Communities (clusters of related entities):\n" +
-        cs.slice(0, 20).map((c, i) => `  [${i + 1}] ${c.hub} +${c.size - 1} more - ${c.members.slice(0, 8).join(", ")}${c.members.length > 8 ? "…" : ""}`).join("\n")
+      ? "Communities (clusters of related entities):\n" + cs.slice(0, 20).map((c, i) => `  [${i + 1}] ${c.summary}`).join("\n")
       : "No clusters yet (graph has no relationships)."
     return { content: [{ type: "text", text }] }
   }

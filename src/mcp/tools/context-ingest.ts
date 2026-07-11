@@ -11,7 +11,9 @@ const schema = {
     "graph. IMPORTANT: YOU already understood this content, so ALSO pass the `entities` and `relations` you " +
     "extracted - they're stored as precise TYPED triples (no second model re-reads it). Relations should be " +
     "subject→predicate→object with a SHORT snake_case predicate (e.g. partners_with, acquired, works_at, " +
-    "deploys, located_in). DON'T USE for transient chit-chat or one-off computations.",
+    "deploys, located_in). ALSO pass `episodes` for time-anchored experiences (what happened, when, who → " +
+    "EPISODIC memory) and `procedures` for learned how-tos/preferences (trigger → action → PROCEDURAL memory). " +
+    "DON'T USE for transient chit-chat or one-off computations.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -43,6 +45,31 @@ const schema = {
           required: ["from", "to", "type"],
         },
       },
+      episodes: {
+        type: "array",
+        description: "time-anchored experiences → EPISODIC memory (what happened, when, who was involved)",
+        items: {
+          type: "object",
+          properties: {
+            event: { type: "string", description: "what happened, as one experience" },
+            occurredAt: { type: "string", description: "when it happened (ISO date/time; optional, defaults to now)" },
+            actors: { type: "array", items: { type: "string" }, description: "entity names involved (people/orgs)" },
+          },
+          required: ["event"],
+        },
+      },
+      procedures: {
+        type: "array",
+        description: "learned how-tos / preferences → PROCEDURAL memory (a new action for the same trigger supersedes)",
+        items: {
+          type: "object",
+          properties: {
+            trigger: { type: "string", description: "the condition/context, e.g. 'the user asks for code'" },
+            action: { type: "string", description: "what to do / the preference, e.g. 'use TypeScript, no comments'" },
+          },
+          required: ["action"],
+        },
+      },
       share: {
         type: "array",
         description: "principal ids (users or groups) to ALSO grant read access - default is private to you",
@@ -60,6 +87,8 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     name: string
     entities?: Array<{ name: string; type?: string }>
     relations?: Array<{ from: string; to: string; type: string; confidence?: number }>
+    episodes?: Array<{ event: string; occurredAt?: string; actors?: string[] }>
+    procedures?: Array<{ trigger?: string; action: string }>
     share?: string[]
     org_wide?: boolean
   }
@@ -84,12 +113,16 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     shareWithOrg: a.org_wide ? backend.orgId : undefined,
     entities: a.entities,
     relations: a.relations,
+    episodes: a.episodes,
+    procedures: a.procedures,
   })
   const typed = a.relations?.length ? `, ${a.relations.length} typed relation(s)` : ""
+  const epi = a.episodes?.length ? `, ${a.episodes.length} episode(s)` : ""
+  const proc = a.procedures?.length ? `, ${a.procedures.length} procedure(s)` : ""
   const vis = a.org_wide ? "org-wide" : a.share?.length ? `shared with ${a.share.join(", ")}` : "private"
   return {
     content: [
-      { type: "text", text: `Stored "${a.name}" (${out.chunks} chunk(s), ${out.entities} concept(s)${typed}; ${vis}) as ${out.recordId}.` },
+      { type: "text", text: `Stored "${a.name}" (${out.chunks} chunk(s), ${out.entities} concept(s)${typed}${epi}${proc}; ${vis}) as ${out.recordId}.` },
     ],
   }
 }

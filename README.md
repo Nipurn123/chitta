@@ -31,7 +31,7 @@
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-205%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-228%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -136,12 +136,14 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 | Tool | Does |
 |---|---|
-| `context_ingest` | Store text → record node + **permission edges** (ACL) + **vector chunks** + **extracted concept graph** + **atomic memories** |
-| `get_context` | Retrieve ranked, cited, permission-filtered snippets + the **current memory** (latest, contradiction-resolved) |
+| `context_ingest` | Store text → record node + **permission edges** (ACL) + **vector chunks** + **canonical concept graph** + **atomic memories** (semantic facts, **episodic** experiences, **procedural** how-tos) |
+| `get_context` | Retrieve ranked, cited, permission-filtered snippets + the **current memory** (contradiction-resolved) + relevant experiences + applicable preferences |
 | `context_forget` | Forget memories that are no longer true/wanted (soft-delete, within what you may see) |
 | `context_profile` | Synthesize a profile of a person/org/entity (permanent + recent facts + connections) |
 | `context_graph` | Return the knowledge graph (concepts + relationships) the user can access |
-| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
+| `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central / communities) |
+| `context_timeline` | **Reason over time** — how a subject evolved, or the facts believed **as of** a past date |
+| `context_reflect` | **Reflect** — synthesize higher-order insight (recurring focus, what changed, preferences, recent activity) |
 
 ## Operate (CLI)
 
@@ -162,25 +164,38 @@ Encryption + rotation need the optional driver once: `bun add libsql`.
 
 ## Living memory (permission-aware)
 
-Beyond storing snippets, Chitta maintains a **living-memory layer** - the part most memory
-products treat as proprietary magic, here done natively and **ACL-scoped**:
+Beyond storing snippets, Chitta maintains a **living-memory layer with a real cognitive
+model** - the part most memory products treat as proprietary magic, here done natively and
+**ACL-scoped**:
 
-- **Atomic memories** - precise typed facts ("Sarah works at Meta"), not just chunks.
-- **Contradiction → versioning** - a newer single-valued fact **supersedes** the old one
-  (`works_at`: Google → Meta); recall returns the current truth, history is kept (v1→vN).
+- **Canonical graph (coreference)** - "Sarah", "Sarah Chen" and "Ms. Chen" fold into one
+  entity, so the graph doesn't fragment and a contradiction stated under a *different surface
+  form* still resolves.
+- **A memory typology, not just chunks** - **semantic** facts ("Sarah works at Meta"),
+  **episodic** experiences (time-anchored events with actors, recalled by relevance × recency),
+  and **procedural** how-tos/preferences (trigger → action).
+- **Self-correcting** - contradictions supersede (`works_at`: Google → Meta; history kept);
+  belief revision is **confidence-aware** (a weak claim can't overwrite a confident one);
+  **semantic contradictions** are caught beyond single-valued facts (`likes` vs `dislikes`);
+  importance is scored at write; a **sleep-time pass** (`chitta sleep`) dedupes, retires, and
+  re-weights by corroboration.
+- **Reasons over time** - `context_timeline`: how a subject evolved, or the facts believed
+  **as of** a past date (the store is bi-temporal).
+- **Reflects** - `context_reflect`: synthesizes higher-order insight (recurring focus, what
+  changed, preferences, recent activity) over what you're permitted to see.
 - **Forgetting** - `context_forget` soft-deletes by description; optional TTL
-  (`CONTEXT_MEMORY_TTL_DAYS`) retires dynamic memories, static facts are exempt. It's
-  coherent: the underlying graph fact is expired too.
-- **Permission-aware throughout** - you can only recall or forget what your ACL permits,
-  across a *shared* org graph. (Most memory layers only isolate per-user pools - they have
-  no concept of "who is allowed to remember what" inside a team.)
+  (`CONTEXT_MEMORY_TTL_DAYS`) retires dynamic memories, static facts are exempt. Coherent:
+  the underlying graph fact is expired too.
+- **Permission-aware throughout** - you can only recall, reflect on, or forget what your ACL
+  permits, across a *shared* org graph. (Most memory layers only isolate per-user pools - they
+  have no concept of "who is allowed to remember what" inside a team.)
 
 ## Run it
 
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 205 tests
+bun test                          # 228 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 

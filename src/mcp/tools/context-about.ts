@@ -33,11 +33,20 @@ async function describe(backend: ContextBackend): Promise<string> {
     "re-asserted (frequency≈confidence), provenance (which records asserted it), and validity intervals. New facts",
     "MERGE into existing ones rather than duplicating; a newer single-valued fact (e.g. moved cities) SUPERSEDES the",
     "old one non-destructively - the prior fact stays in history (marked expired) and never surfaces as current.",
+    "Entities are CANONICALIZED (coreference resolution): 'Sarah', 'Sarah Chen' and 'Ms. Chen' fold to one node,",
+    "so the graph doesn't fragment and a contradiction stated under a different surface form still resolves.",
     "",
-    "LIVING MEMORY: on top of the graph, ingested typed facts become atomic MEMORIES with version chains",
-    "(a contradiction supersedes the old version; history kept), a static-vs-dynamic distinction, and forgetting",
-    "(context_forget, or a TTL via CONTEXT_MEMORY_TTL_DAYS). get_context returns the CURRENT truth (contradictions",
-    "resolved, forgotten excluded); context_profile rolls an entity up into permanent + recent facts + connections.",
+    "LIVING MEMORY (a real memory TYPOLOGY, not just chunks): ingested content becomes atomic memories of three",
+    "kinds - SEMANTIC facts (version chains; a contradiction supersedes, history kept), EPISODIC experiences",
+    "(time-anchored events with actors + an event-time axis, recalled by relevance × recency), and PROCEDURAL",
+    "how-tos/preferences (trigger → action, supersede on change). It is SELF-CORRECTING: belief revision is",
+    "confidence-aware (a weak claim can't overwrite a confident one), semantic contradictions are detected beyond",
+    "single-valued facts (antonyms/negation: 'likes' vs 'dislikes'), importance is scored at write, and a sleep-time",
+    "consolidation pass (`chitta sleep`) dedupes entities, retires expired memories, and re-weights by corroboration.",
+    "It REASONS OVER TIME (context_timeline: how X evolved, or the beliefs held as-of a past date) and REFLECTS",
+    "(context_reflect: recurring focus, what changed, preferences, recent activity). get_context returns the CURRENT",
+    "truth plus relevant experiences + applicable preferences; context_profile rolls an entity up; forgetting via",
+    "context_forget or a TTL (CONTEXT_MEMORY_TTL_DAYS).",
     "",
     "SECURITY (this is the product, not an add-on): every read is ACL-gated by the graph BEFORE any content is",
     "returned (gate-first → provably zero cross-user/cross-org leak, including per-edge); recalled content is wrapped",
@@ -59,7 +68,9 @@ async function describe(backend: ContextBackend): Promise<string> {
     const s = await backend.stats()
     lines.push(`- contents: ${s.records} record(s), ${s.chunks} chunk(s), ${s.entities} concept(s), ${s.relations} relationship(s)`)
     if (s.memories !== undefined) {
-      lines.push(`- living memory: ${s.memories.current} current memor(ies), ${s.memories.forgotten} forgotten (of ${s.memories.total} total versions)`)
+      const k = s.memoryKinds
+      const kinds = k ? ` (${k.semantic} semantic · ${k.episodic} episodic · ${k.procedural} procedural)` : ""
+      lines.push(`- living memory: ${s.memories.current} current memor(ies)${kinds}, ${s.memories.forgotten} forgotten (of ${s.memories.total} total versions)`)
     }
   }
   lines.push("", "## Tools")

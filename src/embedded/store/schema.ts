@@ -4,6 +4,7 @@
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import * as sqliteVec from "sqlite-vec"
+import { migrateEntityAliases } from "./entities"
 
 // setCustomSQLite must be called once, before any Database is opened. We point bun
 // at an extension-capable SQLite (Homebrew / system) so sqlite-vec can load.
@@ -59,6 +60,7 @@ export function migrate(db: Database): void {
   if (!ecols.includes("confidence")) db.exec("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
   migrateMemories(db)
   migrateAudit(db)
+  migrateEntityAliases(db)
 }
 
 // The AUDIT table - append-only, hash-chained tamper-evident access log (see audit.ts).
@@ -117,6 +119,24 @@ export function migrateMemories(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_memories_root ON memories(root_id);
     CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source_record_id);
   `)
+  // Memory TYPOLOGY (added idempotently so existing DBs upgrade). One table, three kinds:
+  //   • 'semantic'   - timeless atomic facts (the original rows; the default).
+  //   • 'episodic'   - time-anchored experiences/events. `occurred_at` is the EVENT time
+  //     (valid time), distinct from created_at/updated_at (ingestion/transaction time) -
+  //     memories become bi-temporal, which powers "what happened when" + Stage-3 timelines.
+  //     `actor_ids` links the episode to the CANONICAL entities involved (Stage 1), so
+  //     "last time I spoke with Sarah" resolves Sarah → her node → her episodes.
+  //   • 'procedural' - learned how-tos / preferences (trigger → action); supersede-on-change.
+  const mcols = (db.query("PRAGMA table_info(memories)").all() as Array<{ name: string }>).map((c) => c.name)
+  if (!mcols.includes("kind")) db.exec("ALTER TABLE memories ADD COLUMN kind TEXT NOT NULL DEFAULT 'semantic'")
+  if (!mcols.includes("occurred_at")) db.exec("ALTER TABLE memories ADD COLUMN occurred_at INTEGER")
+  if (!mcols.includes("actor_ids")) db.exec("ALTER TABLE memories ADD COLUMN actor_ids TEXT NOT NULL DEFAULT '[]'")
+  // Belief-revision trust: how sure we are this atomic fact is true (from the asserting
+  // relation's confidence). A newer functional fact only SUPERSEDES the current one when it
+  // is at least as confident - a low-confidence claim can't overwrite a high-confidence belief.
+  if (!mcols.includes("confidence")) db.exec("ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind, virtual_record_id, is_forgotten)")
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memories_occurred ON memories(occurred_at)")
 }
 
 // The edges table is a property-graph relation store shared by ACL (permissions/
