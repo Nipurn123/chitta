@@ -2,6 +2,8 @@
 // one bulky "magnet" doc can't dominate a query on a coincidental word match.
 import { test, expect, describe } from "bun:test"
 import { buildEmbeddedContext } from "../../src/embedded/index"
+import { rerankStage } from "../../src/embedded/retrieval/rerank-stage"
+import type { FusedResult } from "../../src/embedded/retrieval/fuse"
 
 describe("retrieval diversity cap", () => {
   test("no more than maxPerRecord chunks from a single magnet record survive", async () => {
@@ -37,5 +39,30 @@ describe("retrieval diversity cap", () => {
     const topRecord = out.searchResults[0]?.metadata.recordId ?? ""
     expect(out.searchResults.filter((r) => r.metadata.recordId === "ext").length).toBeLessThanOrEqual(2)
     expect(["pref", "ext"]).toContain(topRecord) // sane: at least one of the two
+  })
+})
+
+describe("cross-encoder blend (recall-preserving rerank)", () => {
+  // A stub cross-encoder that MIS-scores the strong-RRF gold item LOW (0.1) and distractors
+  // HIGH (0.9) - the out-of-domain failure mode. Pure rerank obeys it and buries the gold;
+  // blend rank-fuses with the RRF order and rescues it (so recall@k isn't lost).
+  const stub = { rank: async (_q: string, docs: string[]) => docs.map((d) => (d.includes("GOLDDOC") ? 0.1 : 0.9)) }
+  const mk = (id: string, content: string, rrf: number): FusedResult =>
+    ({ content, metadata: { recordId: id }, rrf, legs: new Set(["vector"]) }) as FusedResult
+  const fresh = (): FusedResult[] => [mk("gold", "alpha GOLDDOC beta", 0.05), mk("a", "alpha distractor one", 0.03), mk("b", "alpha distractor two", 0.02)]
+
+  test("pure rerank demotes a mis-scored strong-RRF item; blend keeps it near the top", async () => {
+    delete process.env.CONTEXT_RERANK_BLEND
+    const pure = await rerankStage(stub, "alpha", fresh(), 0)
+    const pureIds = pure.ordered.map((r) => r.metadata.recordId as string)
+    expect(pure.rerankerUsed).toBe(true)
+    expect(pureIds[pureIds.length - 1]).toBe("gold") // cross-encoder buried the gold last
+
+    process.env.CONTEXT_RERANK_BLEND = "1"
+    const blend = await rerankStage(stub, "alpha", fresh(), 0)
+    const blendIds = blend.ordered.map((r) => r.metadata.recordId as string)
+    delete process.env.CONTEXT_RERANK_BLEND
+    expect(blendIds.indexOf("gold")).toBeLessThan(pureIds.indexOf("gold")) // blend rescues it
+    expect(blendIds[blendIds.length - 1]).not.toBe("gold") // no longer buried last
   })
 })
