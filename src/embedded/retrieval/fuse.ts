@@ -33,6 +33,25 @@ export function rrfFuse(
   return [...fused.values()]
 }
 
+// Union a SECOND fused list into the first (in place), adding rrf contributions for items
+// already present and appending new ones - used to fold a pseudo-relevance-feedback (PRF)
+// second-pass pool into the first pass. Same keying as rrfFuse so items align.
+export function mergeFused(into: FusedResult[], extra: FusedResult[]): void {
+  const keyOf = (r: FusedResult) => (r.metadata.point_id as string) ?? `${r.metadata.virtualRecordId ?? ""}|${r.content.slice(0, 80)}`
+  const idx = new Map(into.map((r) => [keyOf(r), r]))
+  for (const e of extra) {
+    const k = keyOf(e)
+    const ex = idx.get(k)
+    if (ex) {
+      ex.rrf += e.rrf
+      for (const l of e.legs) ex.legs.add(l)
+    } else {
+      into.push(e)
+      idx.set(k, e)
+    }
+  }
+}
+
 // Backfill recordName/recordId for BM25-only items (so citations resolve).
 export function backfillMeta(store: SqliteStore, merged: FusedResult[], accMap: AccessibleMap): void {
   const needMeta = merged.filter((r) => !r.metadata.recordName && r.metadata.virtualRecordId)

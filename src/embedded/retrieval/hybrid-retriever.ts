@@ -17,7 +17,8 @@ import type { RetrievalResponse } from "../../types"
 import { vectorStage } from "./vector-stage"
 import { keywordStage } from "./keyword-stage"
 import { graphStage } from "./graph-stage"
-import { rrfFuse, backfillMeta } from "./fuse"
+import { rrfFuse, backfillMeta, mergeFused } from "./fuse"
+import { expansionTerms } from "./prf"
 import { decayConfig, decayStage } from "./decay-stage"
 import { rerankStage } from "./rerank-stage"
 import { diversityStage } from "./diversity"
@@ -59,6 +60,25 @@ export async function hybridSearch(
   const K = Number(process.env.CONTEXT_RRF_K ?? 60)
   const merged = rrfFuse(dense, bm25, graphList, K)
   backfillMeta(store, merged, accMap)
+
+  // ── optional PRF: a 2nd retrieval hop, LLM-free ──
+  // Mine distinctive terms from the top of the first pass, expand the query with them, and
+  // re-run dense+sparse. Folds items the raw query couldn't reach into the pool (the biggest
+  // deterministic recall lever once the embedder is maxed out). Off by default (CONTEXT_PRF).
+  if (/^(1|true|on)$/i.test(process.env.CONTEXT_PRF ?? "") && merged.length > 0) {
+    const terms = expansionTerms(
+      query,
+      merged.slice(0, Number(process.env.CONTEXT_PRF_DOCS ?? 5)).map((m) => m.content),
+      Number(process.env.CONTEXT_PRF_TERMS ?? 8),
+    )
+    if (terms.length) {
+      const eq = `${query} ${terms.join(" ")}`
+      const { dense: dense2 } = await vectorStage(retrieval, eq, userId, orgId, retrieveLimit)
+      const bm2 = keywordStage(store, eq, orgId, accessibleVids, retrieveLimit)
+      mergeFused(merged, rrfFuse(dense2, bm2, [], K))
+      backfillMeta(store, merged, accMap)
+    }
+  }
 
   // ── re-rank: personal boost + memory decay/salience (sorts merged) ──
   const cfg = decayConfig()
