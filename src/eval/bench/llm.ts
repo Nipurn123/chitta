@@ -59,7 +59,14 @@ export class HttpBenchLlm implements BenchLlm {
   // Mirrors LlmExtractor.chat exactly: same path, headers, body shape, and lenient
   // response parse. temperature 0 keeps both answering and judging deterministic.
   private async chat(model: string, system: string, user: string): Promise<string> {
-    const res = await this.fetch(`${this.cfg.endpoint.replace(/\/$/, "")}/v1/chat/completions`, {
+    // Accept either an OpenAI-style BASE url (append /v1/chat/completions) or a FULL
+    // endpoint url that already ends in /chat/completions (e.g. Vertex AI's OpenAI-compatible
+    // path .../endpoints/openapi/chat/completions). max_tokens must be generous: a "thinking"
+    // model (Gemini 2.5, o-series) spends tokens on reasoning first, so a small cap returns
+    // an EMPTY answer. Configurable via CONTEXT_LLM_MAX_TOKENS.
+    const ep = this.cfg.endpoint.replace(/\/$/, "")
+    const url = /\/chat\/completions$/.test(ep) ? ep : `${ep}/v1/chat/completions`
+    const res = await this.fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -68,6 +75,7 @@ export class HttpBenchLlm implements BenchLlm {
       body: JSON.stringify({
         model,
         temperature: 0,
+        max_tokens: Number(process.env.CONTEXT_LLM_MAX_TOKENS ?? 1024),
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
