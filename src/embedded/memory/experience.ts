@@ -25,6 +25,8 @@ export interface ExperienceOpts {
   sourceRecordId: string
   /** Optional TTL (ms from now) for episodic memories; procedures never auto-expire. */
   ttlMs?: number
+  /** ACL scope for procedural supersession (what the writer can see). Undefined ⇒ global. */
+  scopeVids?: string[]
 }
 
 export interface EpisodeInput {
@@ -103,7 +105,7 @@ export async function recordProcedure(
   if (!action) return "duplicate"
   const subjectKey = `procedure|${slugify(trigger).slice(0, 64)}`
   const memory = trigger ? `When ${trigger}: ${action}` : action
-  const current = repo.latestBySubject(subjectKey)
+  const current = repo.latestBySubject(subjectKey, opts.scopeVids)
   if (current && current.memory === memory) {
     repo.touch(current.id)
     return "duplicate"

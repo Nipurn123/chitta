@@ -11,8 +11,38 @@ import {
   typeBucket,
   compatibleBucket,
   blockingToken,
+  nameTokens,
+  type TypeBucket,
 } from "../../src/embedded/graph/entity-resolution"
 import { buildEmbeddedContext } from "../../src/embedded/index"
+import type { Database } from "bun:sqlite"
+
+// Faithful reproduction of the ORIGINAL candidate generator (pre-token-index): the O(N)
+// `LIKE '%block%'` blocking-token scan PLUS the short-single-token acronym pull. Used to
+// prove the new indexed entity_tokens lookup returns the SAME candidate set. Uses today's
+// normalizeName/blockingToken so it isolates the blocking MECHANISM (LIKE vs index).
+function oldLikeCandidateIds(db: Database, surface: string, bucket: TypeBucket): Set<string> {
+  const norm = normalizeName(surface, bucket)
+  const block = blockingToken(norm)
+  const out = new Set<string>()
+  if (block) {
+    for (const r of db
+      .query("SELECT id FROM nodes WHERE coll = 'entities' AND lower(json_extract(data,'$.label')) LIKE ? LIMIT 50")
+      .all(`%${block}%`) as Array<{ id: string }>)
+      out.add(r.id)
+  }
+  if (nameTokens(norm).length >= 2) {
+    for (const r of db
+      .query(
+        `SELECT id FROM nodes WHERE coll = 'entities'
+           AND length(json_extract(data,'$.label')) BETWEEN 2 AND 6
+           AND instr(trim(json_extract(data,'$.label')), ' ') = 0 LIMIT 50`,
+      )
+      .all() as Array<{ id: string }>)
+      out.add(r.id)
+  }
+  return out
+}
 
 describe("name matching (pure, high-precision rules)", () => {
   test("normalized equality folds legal suffixes + honorifics + punctuation", () => {
@@ -45,6 +75,29 @@ describe("name matching (pure, high-precision rules)", () => {
     expect(nameMatch("Jordan", "PERSON", "Jordan", "LOCATION").match).toBe(false) // person ≠ place
     expect(typeBucket("Employee")).toBe("person")
     expect(blockingToken("sarah chen")).toBe("sarah")
+  })
+
+  test("nicknames fold to the formal name for PERSON coreference (never for non-persons)", () => {
+    expect(nameMatch("Bob Smith", "PERSON", "Robert Smith", "PERSON").match).toBe(true) // bob → robert
+    expect(nameMatch("Bob", "PERSON", "Robert", "PERSON").match).toBe(true)
+    expect(nameMatch("Liz Taylor", "PERSON", "Elizabeth Taylor", "PERSON").match).toBe(true) // liz → elizabeth
+    expect(nameMatch("Bill", "PERSON", "William Gates", "PERSON").match).toBe(true) // nickname ⊆ full name
+    // Same nickname, DIFFERENT surname → still distinct people (precision preserved).
+    expect(nameMatch("Bob Smith", "PERSON", "Robert Jones", "PERSON").match).toBe(false)
+    // Nickname folding is PERSON-only: two non-persons are NEVER merged on a nickname.
+    expect(nameMatch("Bob", "ORG", "Robert", "ORG").match).toBe(false)
+    expect(nameMatch("Bob", "CONCEPT", "Robert", "CONCEPT").match).toBe(false)
+  })
+
+  test("abbreviations normalize so a short form matches its expansion", () => {
+    expect(normalizeName("Dept of Energy")).toBe("department of energy")
+    expect(normalizeName("Stanford Univ", "org")).toBe("stanford university")
+    expect(nameMatch("Dept. of Energy", "ORG", "Department of Energy", "ORG").reason).toBe("equal")
+    expect(nameMatch("Stanford Univ", "ORG", "Stanford University", "ORG").reason).toBe("equal")
+    expect(nameMatch("Intl Business Group", "ORG", "International Business Group", "ORG").reason).toBe("equal")
+    // Standalone "&" folds to "and"; an intra-word ampersand ("AT&T") is left alone.
+    expect(nameMatch("Barnes & Noble", "ORG", "Barnes and Noble", "ORG").reason).toBe("equal")
+    expect(normalizeName("AT&T", "org")).toBe("at t")
   })
 })
 
@@ -146,5 +199,59 @@ describe("retroactive dedupe (backfill for pre-resolution data)", () => {
     expect(ctx.dedupeEntities()).toBe(0) // idempotent
     const ents = store.db.query("SELECT id FROM nodes WHERE coll = 'entities'").all() as Array<{ id: string }>
     expect(ents.length).toBe(3) // one org + PC + Mainframe (the two org nodes became one)
+  })
+})
+
+describe("token-blocking candidate generation (indexed, replacing the O(N) LIKE scan)", () => {
+  test("candidates() returns the SAME ids the old full-table LIKE scan would", () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    const store = ctx.store
+    const ents: Array<[string, string, string]> = [
+      ["entity:sarah-chen", "Sarah Chen", "PERSON"],
+      ["entity:sarah-connor", "Sarah Connor", "PERSON"],
+      ["entity:michael-scott", "Michael Scott", "PERSON"],
+      ["entity:acme", "Acme Corporation", "ORG"],
+      ["entity:wayne", "Wayne Enterprises", "ORG"],
+      ["entity:globex", "Globex Systems", "ORG"],
+    ]
+    for (const [id, label, type] of ents) store.addNode(id, "entities", { label, type })
+
+    const probes: Array<[string, TypeBucket]> = [
+      ["Sarah", "person"], // single distinctive token → two Sarahs
+      ["Michael Scott", "person"], // multi-token blocking
+      ["Acme", "org"],
+      ["Wayne Enterprises", "org"],
+      ["Globex", "org"],
+      ["Nobody Here", "person"], // no candidates either way
+    ]
+    for (const [surface, bucket] of probes) {
+      const got = new Set(store.entities.candidates(surface, bucket).map((c) => c.id))
+      const want = oldLikeCandidateIds(store.db, surface, bucket)
+      expect([...got].sort()).toEqual([...want].sort())
+    }
+  })
+
+  test("acronym ↔ expansion candidates are surfaced through the token index (both directions)", () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    const store = ctx.store
+    store.addNode("entity:ibm", "entities", { label: "IBM", type: "ORG" })
+    store.addNode("entity:international-business-machines", "entities", {
+      label: "International Business Machines",
+      type: "ORG",
+    })
+    // the expansion surface finds the existing acronym entity …
+    expect(store.entities.candidates("International Business Machines", "org").map((c) => c.id)).toContain("entity:ibm")
+    // … and the acronym surface finds the existing expansion entity.
+    expect(store.entities.candidates("IBM", "org").map((c) => c.id)).toContain("entity:international-business-machines")
+  })
+
+  test("a nickname surface resolves onto the existing canonical end to end", () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    const store = ctx.store
+    const a = store.resolveEntity("Robert Smith", "PERSON")!
+    store.addNode(a.id, "entities", { label: "Robert Smith", type: "PERSON" })
+    const b = store.resolveEntity("Bob Smith", "PERSON")! // bob → robert, shared surname Smith
+    expect(b.merged).toBe(true)
+    expect(b.id).toBe(a.id) // folded onto the existing node, not a second "Bob Smith"
   })
 })

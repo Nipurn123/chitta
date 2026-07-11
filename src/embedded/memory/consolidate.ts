@@ -49,6 +49,11 @@ export interface ConsolidateOpts {
    *  the SAME node id as the typed graph (keeps forget-coherence + recall aligned after
    *  entity resolution). Defaults to entityId(slugify(name)) - the pre-resolution behavior. */
   resolve?: (name: string) => string | null
+  /** ACL scope for belief revision: supersede/contradict only memories anchored to these
+   *  virtual_record_ids (what the WRITER can see). Undefined ⇒ global (legacy/tests). This is
+   *  what stops one user's ingest from clobbering another user's PRIVATE current memory while
+   *  still letting a shared/org-wide fact update once for everyone who can see it. */
+  scopeVids?: string[]
 }
 
 function newId(): string {
@@ -62,7 +67,7 @@ export async function consolidateFact(
   fact: { subjectKey: string; memory: string; functional: boolean; isStatic: boolean; confidence?: number },
   opts: ConsolidateOpts,
 ): Promise<MemoryAction> {
-  const current = repo.latestBySubject(fact.subjectKey)
+  const current = repo.latestBySubject(fact.subjectKey, opts.scopeVids)
   const forgetAfter = !fact.isStatic && opts.ttlMs ? Date.now() + opts.ttlMs : null
   const confidence = fact.confidence ?? 1
 
@@ -143,7 +148,7 @@ export async function consolidateTriples(
     // truth ("likes coffee" → "dislikes coffee"), history kept. Symmetric + conservative.
     if (!functional) {
       for (const anti of antonymPredicates(pred)) {
-        const conflict = repo.latestBySubject(`${subjId}|${anti}|${objId}`)
+        const conflict = repo.latestBySubject(`${subjId}|${anti}|${objId}`, opts.scopeVids)
         if (conflict) repo.forget([conflict.id], `contradicted by "${memory}"`)
       }
     }

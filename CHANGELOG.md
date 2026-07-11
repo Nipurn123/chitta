@@ -82,6 +82,26 @@ semantic versioning once it reaches 1.0.
   - `context_about` now fully self-describes the cognition layer. +5 tests
     (`test/embedded/self-correcting.test.ts`); suite 223 → 228, green.
 
+### Fixed / hardened — robustness pass
+
+- **Permission-scoped belief revision (correctness fix).** Memory supersession + contradiction
+  keyed on a global `subject_key` with no ACL filter, so inside one org DB **one user's ingest
+  could silently clobber another user's PRIVATE current memory** (proven: Alice's private
+  "Sarah works at Meta" vanished when Bob privately ingested "…Google"). `latestBySubject` now
+  takes a `scopeVids` gate; `authorizedIngest` passes the writer's accessible records (∪ the new
+  record) so **private stays private, shared/org-wide still updates once for all**, and
+  intra-record contradictions still resolve. +3 multi-user regression tests.
+- **Community detection: union-find → Label Propagation.** Connected-components collapsed any
+  densely-wired graph into one useless "cluster of 900"; deterministic weighted async LPA now
+  recovers modular structure (two groups joined by a lone bridge stay separate). Same API/summary.
+- **Entity resolution hardened.** Nickname folding (Bob↔Robert, Liz↔Elizabeth; PERSON-gated) +
+  abbreviation normalization (Dept→Department, Intl→International, `&`→and); and an indexed
+  `entity_tokens` blocking table **replaces the O(N) `LIKE` scan** on every ingest.
+- **Measurement.** New `test/eval/deep-memory-benchmark.test.ts` quantifies the cognition layer:
+  entity-resolution fragmentation **1.000** (17 surface forms → 6 canonical nodes), contradiction
+  resolution **6/6**, retrieval recall@5/MRR/nDCG **1.000** (goldset saturated — harder paraphrase
+  queries flagged as future work). Suite 228 → **246**, typecheck clean.
+
 ## [0.1.13] - 2026-06-29
 
 ### Changed

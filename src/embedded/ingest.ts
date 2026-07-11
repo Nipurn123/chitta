@@ -65,6 +65,9 @@ export interface IngestDoc {
   episodes?: Array<{ event: string; occurredAt?: number | string; actors?: string[] }>
   /** Learned how-tos / preferences → PROCEDURAL memory (trigger → action; supersede on change). */
   procedures?: Array<{ trigger?: string; action: string }>
+  /** INTERNAL (set by the authorized write path): the writer's accessible virtual_record_ids,
+   *  so belief revision only supersedes memories the writer can see. Undefined ⇒ global. */
+  scopeVids?: string[]
 }
 
 /** Structure-aware chunker. The old greedy-merge packed many DISTINCT facts into one
@@ -245,6 +248,7 @@ export class Ingestor {
           sourceRecordId: doc.recordId,
           ttlMs: memoryTtlMs(),
           resolve: (name) => this.store.resolveEntity(name)?.id ?? null,
+          scopeVids: doc.scopeVids,
         })
       }
     }
@@ -271,7 +275,7 @@ export class Ingestor {
         this.store.memories,
         this.embeddings,
         doc.procedures.map((p) => ({ trigger: p.trigger ?? "", action: p.action })),
-        { orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId },
+        { orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId, scopeVids: doc.scopeVids },
       )
     }
 

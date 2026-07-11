@@ -63,8 +63,22 @@ export interface NewMemory {
 export class MemoryRepo {
   constructor(private readonly db: Database) {}
 
-  /** The current (live) memory for a subject_key, if any. "Live" = latest, not forgotten. */
-  latestBySubject(subjectKey: string): MemoryRow | undefined {
+  /** The current (live) memory for a subject_key, if any. "Live" = latest, not forgotten.
+   *  When `scopeVids` is provided, the search is RESTRICTED to those virtual_record_ids -
+   *  the same ACL gate the read path uses - so consolidation/contradiction only ever
+   *  supersede a belief the writer can actually SEE. Without it (undefined), the search is
+   *  global (the legacy behavior; used by direct/test call sites). An explicit EMPTY scope
+   *  means "nothing visible" → no match. */
+  latestBySubject(subjectKey: string, scopeVids?: string[]): MemoryRow | undefined {
+    if (scopeVids && scopeVids.length === 0) return undefined
+    if (scopeVids && scopeVids.length > 0) {
+      return this.db
+        .query(
+          `SELECT * FROM memories WHERE subject_key = ? AND is_latest = 1 AND is_forgotten = 0
+             AND virtual_record_id IN (${ph(scopeVids.length)}) ORDER BY version DESC LIMIT 1`,
+        )
+        .get(subjectKey, ...scopeVids) as MemoryRow | undefined
+    }
     return this.db
       .query("SELECT * FROM memories WHERE subject_key = ? AND is_latest = 1 AND is_forgotten = 0 ORDER BY version DESC LIMIT 1")
       .get(subjectKey) as MemoryRow | undefined

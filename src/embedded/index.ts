@@ -183,7 +183,14 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     await reconcile() // heal embedder/dim drift before writing new vectors
     authorizer.assertCanCreate(actingUserId, doc.orgId, doc.permittedPrincipals ?? [], doc.shareWithOrg)
     const principals = [...new Set([...(doc.permittedPrincipals ?? []), actingUserId])] // owner can always read
-    return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals })
+    // Belief-revision ACL scope: the records this writer can currently SEE, plus the one
+    // being created. Consolidation supersedes/contradicts only within this set, so a user's
+    // ingest can't clobber another user's PRIVATE memory (different visibility), while a
+    // shared/org-wide fact still updates once for everyone who can see it, and two
+    // contradicting facts inside THIS record still resolve.
+    const acc = await graph.getAccessibleVirtualRecordIds({ userId: actingUserId, orgId: doc.orgId })
+    const scopeVids = [...new Set([...Object.values(acc), doc.virtualRecordId ?? doc.recordId])]
+    return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals, scopeVids })
   }
 
   // Authorized delete: only the owner or an admin may remove a record (+ its

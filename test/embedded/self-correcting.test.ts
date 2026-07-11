@@ -115,3 +115,66 @@ describe("sleep-time consolidation", () => {
     expect(second.recordsReweighted).toBe(0)
   })
 })
+
+describe("permission-scoped belief revision (multiple users, one org DB)", () => {
+  test("one user's private update does NOT clobber another user's private memory", async () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    ctx.ingestor.registerUser("alice", "acme")
+    ctx.ingestor.registerUser("bob", "acme")
+    // Alice privately: her contact Sarah works at Meta. Bob privately: HIS Sarah works at Google.
+    await ctx.authorizedIngest("alice", {
+      recordId: "a1", orgId: "acme", recordName: "Alice", text: "x",
+      entities: [{ name: "Sarah", type: "PERSON" }, { name: "Meta", type: "ORG" }],
+      relations: [{ from: "Sarah", to: "Meta", type: "works_at" }],
+    })
+    await ctx.authorizedIngest("bob", {
+      recordId: "b1", orgId: "acme", recordName: "Bob", text: "x",
+      entities: [{ name: "Sarah", type: "PERSON" }, { name: "Google", type: "ORG" }],
+      relations: [{ from: "Sarah", to: "Google", type: "works_at" }],
+    })
+    const alice = (await ctx.recallMemories("where does Sarah work", "alice", "acme")).map((m) => m.memory).join(" ")
+    const bob = (await ctx.recallMemories("where does Sarah work", "bob", "acme")).map((m) => m.memory).join(" ")
+    expect(alice).toContain("Meta") // Alice KEEPS her private memory (was the clash bug)
+    expect(alice).not.toContain("Google") // and never sees Bob's
+    expect(bob).toContain("Google")
+  })
+
+  test("the same user's newer fact still supersedes across their OWN records", async () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    ctx.ingestor.registerUser("alice", "acme")
+    await ctx.authorizedIngest("alice", {
+      recordId: "a1", orgId: "acme", recordName: "A", text: "x",
+      entities: [{ name: "Sarah", type: "PERSON" }, { name: "Meta", type: "ORG" }],
+      relations: [{ from: "Sarah", to: "Meta", type: "works_at" }],
+    })
+    await ctx.authorizedIngest("alice", {
+      recordId: "a2", orgId: "acme", recordName: "B", text: "x",
+      entities: [{ name: "Sarah", type: "PERSON" }, { name: "OpenAI", type: "ORG" }],
+      relations: [{ from: "Sarah", to: "OpenAI", type: "works_at" }],
+    })
+    const alice = (await ctx.recallMemories("where does Sarah work", "alice", "acme")).map((m) => m.memory).join(" ")
+    expect(alice).toContain("OpenAI") // scoping didn't break normal within-scope supersession
+    expect(alice).not.toContain("Meta")
+  })
+
+  test("an org-wide fact updates once for everyone who can see it", async () => {
+    const ctx = buildEmbeddedContext({ path: ":memory:" })
+    ctx.ingestor.registerUser("alice", "acme")
+    ctx.ingestor.registerUser("bob", "acme")
+    await ctx.authorizedIngest("alice", {
+      recordId: "a1", orgId: "acme", recordName: "A", text: "x", shareWithOrg: "acme",
+      entities: [{ name: "Acme", type: "ORG" }, { name: "Berlin", type: "PLACE" }],
+      relations: [{ from: "Acme", to: "Berlin", type: "headquartered_in" }],
+    })
+    await ctx.authorizedIngest("bob", {
+      recordId: "b1", orgId: "acme", recordName: "B", text: "x", shareWithOrg: "acme",
+      entities: [{ name: "Acme", type: "ORG" }, { name: "Munich", type: "PLACE" }],
+      relations: [{ from: "Acme", to: "Munich", type: "headquartered_in" }],
+    })
+    const alice = (await ctx.recallMemories("Acme headquarters", "alice", "acme")).map((m) => m.memory).join(" ")
+    const bob = (await ctx.recallMemories("Acme headquarters", "bob", "acme")).map((m) => m.memory).join(" ")
+    expect(alice).toContain("Munich") // shared belief updated for all
+    expect(bob).toContain("Munich")
+    expect(alice).not.toContain("Berlin") // superseded, not duplicated
+  })
+})

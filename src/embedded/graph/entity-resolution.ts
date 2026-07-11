@@ -37,6 +37,80 @@ const CORP_SUFFIXES = new Set([
 // Non-distinctive tokens: present in a name but too common to key a merge on.
 const STOP = new Set(["the", "a", "an", "of", "and", "for", "to", "in", "on", "at", "by", "de", "la", "le", "el", "van", "von"])
 
+// Common English nickname ↔ formal-name pairs, PERSON-only. A nickname is folded to ONE
+// canonical (the formal name) so "Bob Smith" corefers with "Robert Smith". Deliberately
+// conservative + high-precision: only well-established, low-ambiguity nicknames, and only
+// ever consulted under the PERSON bucket - a nickname NEVER merges two non-persons.
+const NICKNAMES: Record<string, string[]> = {
+  robert: ["bob", "bobby", "rob", "robbie"],
+  william: ["bill", "billy", "will", "willie"],
+  elizabeth: ["liz", "lizzie", "beth", "betty", "eliza"],
+  michael: ["mike", "mikey"],
+  james: ["jim", "jimmy"],
+  david: ["dave", "davey"],
+  thomas: ["tom", "tommy"],
+  richard: ["rick", "rich", "dick", "richie"],
+  joseph: ["joe", "joey"],
+  anthony: ["tony"],
+  daniel: ["dan", "danny"],
+  matthew: ["matt"],
+  andrew: ["andy"],
+  benjamin: ["ben", "benny"],
+  nicholas: ["nick"],
+  gregory: ["greg"],
+  jeffrey: ["jeff"],
+  kenneth: ["ken"],
+  ronald: ["ron"],
+  donald: ["don"],
+  peter: ["pete"],
+  charles: ["charlie", "chuck"],
+  frederick: ["fred", "freddy"],
+  katherine: ["kate", "katie", "kathy"],
+  margaret: ["maggie", "meg", "peggy"],
+  susan: ["sue", "susie"],
+  jennifer: ["jen", "jenny"],
+  rebecca: ["becky"],
+  joshua: ["josh"],
+  zachary: ["zach", "zack"],
+  edward: ["ed", "eddie"],
+  timothy: ["tim"],
+  patricia: ["patty", "patti"],
+  stephen: ["steve"],
+}
+
+// Flattened nickname→formal (and formal→itself) map, built once for O(1) canonicalization.
+const NICKNAME_CANON: Map<string, string> = (() => {
+  const m = new Map<string, string>()
+  for (const [formal, nicks] of Object.entries(NICKNAMES)) {
+    m.set(formal, formal)
+    for (const n of nicks) m.set(n, formal)
+  }
+  return m
+})()
+
+/** Fold a single name token to its formal canonical ("bob"→"robert"); unknown tokens are
+ *  returned unchanged. PERSON-only by convention - callers must gate on the person bucket. */
+export function canonicalPersonToken(tok: string): string {
+  return NICKNAME_CANON.get(tok) ?? tok
+}
+
+// Common name/word abbreviations, normalized so "Dept" == "Department", "Univ" ==
+// "University", etc. Applied to EVERY bucket (an abbreviation is noise regardless of type).
+// "&"→"and" is handled separately in normalizeName because the ampersand is stripped as
+// punctuation before token-level rules can see it. Conservative set - only unambiguous forms.
+const ABBREVIATIONS: Map<string, string> = new Map([
+  ["intl", "international"],
+  ["dept", "department"],
+  ["depts", "departments"],
+  ["univ", "university"],
+  ["assoc", "association"],
+  ["assn", "association"],
+  ["govt", "government"],
+  ["natl", "national"],
+  ["mfg", "manufacturing"],
+  ["bros", "brothers"],
+])
+
 // Coarse type buckets. Two names only CONFLICT (block a merge) when BOTH have a known,
 // concrete bucket and the buckets differ. Anything unmapped is "generic" ⇒ compatible.
 export type TypeBucket = "person" | "org" | "place" | "work" | "generic"
@@ -60,8 +134,10 @@ export function compatibleBucket(a: TypeBucket, b: TypeBucket): boolean {
  *  (person) / legal suffixes (org), collapse punctuation to spaces. Bucket-aware because
  *  what's "noise" differs by type (an honorific on an org name is meaningful text). */
 export function normalizeName(name: string, bucket: TypeBucket = "generic"): string {
-  let s = name.toLowerCase().replace(/['’]s\b/g, "").replace(/[^a-z0-9]+/g, " ").trim()
-  let toks = s.split(/\s+/).filter(Boolean)
+  // "&" → "and" first, but only as a standalone word ("Barnes & Noble") so intra-word
+  // ampersands ("AT&T") aren't spuriously expanded. Then strip possessives + punctuation.
+  let s = name.toLowerCase().replace(/\s+&\s+/g, " and ").replace(/['’]s\b/g, "").replace(/[^a-z0-9]+/g, " ").trim()
+  let toks = s.split(/\s+/).filter(Boolean).map((t) => ABBREVIATIONS.get(t) ?? t)
   if (bucket === "person") toks = toks.filter((t) => !HONORIFICS.has(t))
   if (bucket === "org") while (toks.length > 1 && CORP_SUFFIXES.has(toks[toks.length - 1])) toks.pop()
   s = toks.join(" ")
@@ -91,6 +167,48 @@ function acronyms(toks: string[]): string[] {
   const all = toks.map((t) => t[0]).join("")
   const noStop = toks.filter((t) => !STOP.has(t)).map((t) => t[0]).join("")
   return [...new Set([all, noStop])].filter((a) => a.length >= 2)
+}
+
+// Word tokens distinctive enough to key candidate blocking on: length ≥ 2 (so short
+// all-caps names like "PC"/"IBM" stay indexable), minus stopwords, legal suffixes and
+// honorifics (which are name noise, not identity). NOT the same as `distinctive` (≥4) -
+// blocking wants recall (find the candidate), matching wants precision (accept the merge).
+function meaningfulTokens(toks: string[]): string[] {
+  return toks.filter((t) => t.length >= 2 && !STOP.has(t) && !CORP_SUFFIXES.has(t) && !HONORIFICS.has(t))
+}
+
+/** Tokens an entity is INDEXED under for candidate blocking - the distinctive word tokens
+ *  of its label, plus its acronym form(s) ("International Business Machines" ⇒ "ibm") and
+ *  the formal canonical of any nickname token ("bob" ⇒ "robert"). Any name that COULD match
+ *  this one shares ≥1 of these tokens, so the indexed lookup never misses a real merge that
+ *  the old full-table LIKE scan would have surfaced. Deterministic + dependency-free. */
+export function indexTokens(surface: string, bucket: TypeBucket = "generic"): string[] {
+  const toks = nameTokens(normalizeName(surface, bucket))
+  const out = new Set<string>(meaningfulTokens(toks))
+  for (const t of meaningfulTokens(toks)) {
+    const c = canonicalPersonToken(t)
+    if (c !== t) out.add(c) // fold in the formal name so a nickname surface still blocks
+  }
+  for (const a of acronyms(toks)) out.add(a)
+  return [...out]
+}
+
+/** Blocking keys to LOOK UP when searching for candidates for a surface form. Mirrors the
+ *  old scan's reach: the single most distinctive token (the LIKE-`%token%` key), the
+ *  surface's acronym form(s) (so an expansion finds an existing acronym entity, and vice
+ *  versa), and the formal canonical of any nickname token - but no more, so blocking stays
+ *  narrow (≈ the old candidate set) rather than pulling every entity sharing any word. */
+export function blockingTokens(surface: string, bucket: TypeBucket = "generic"): string[] {
+  const toks = nameTokens(normalizeName(surface, bucket))
+  const out = new Set<string>()
+  const block = blockingToken(normalizeName(surface, bucket))
+  if (block) out.add(block)
+  for (const t of meaningfulTokens(toks)) {
+    const c = canonicalPersonToken(t)
+    if (c !== t) out.add(c)
+  }
+  for (const a of acronyms(toks)) out.add(a)
+  return [...out]
 }
 
 /** Damerau/OSA edit distance (transposition-aware), capped: a swap of two adjacent chars
@@ -166,8 +284,16 @@ export function nameMatch(
   // 4) Name containment ("Sarah" ⊆ "Sarah Chen") - the coreference case. Gated to PERSON
   //    only: for people a first name / last name reliably refers to the same individual,
   //    whereas for concepts/products containment over-merges ("100X Pro" vs "100X Flash").
+  //    Nicknames are folded to their formal canonical here (PERSON-only), so "Bob Smith"
+  //    corefers with "Robert Smith" and "Bob" with "Robert Chen" - never for non-persons.
   if (bucket === "person") {
-    const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta]
+    const cta = ta.map(canonicalPersonToken)
+    const ctb = tb.map(canonicalPersonToken)
+    // Same person under a nickname/abbreviation variant: identical once folded. Only
+    // reachable when the fold actually changed something (plain equality already returned
+    // above at step 1), so this can't widen equality - it only recovers nickname pairs.
+    if (cta.length === ctb.length && cta.join(" ") === ctb.join(" ")) return { match: true, score: 0.9, reason: "equal" }
+    const [short, long] = cta.length <= ctb.length ? [cta, ctb] : [ctb, cta]
     const setLong = new Set(long)
     const subset = short.every((t) => setLong.has(t))
     const strongEnough = short.length >= 2 || (short.length === 1 && distinctive(short[0]))
