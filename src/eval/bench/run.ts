@@ -3,7 +3,7 @@
 // question. Tier B is a DEPENDENCY (scoreQa + llm), not an import, so the runner compiles and
 // runs Tier A with no LLM, and tests inject deterministic stubs. Returns one Scorecard.
 
-import { buildEmbeddedContext } from "../../embedded/index"
+import { buildEmbeddedContext, DeterministicExtractor, HybridExtractor, LlmExtractor, type KnowledgeExtractor } from "../../embedded/index"
 import { CrossEncoderReranker } from "../../embedded/reranker"
 import type { BenchmarkDataset } from "../datasets/types"
 import type { RunConfig, Scorecard, BenchLlm, ScoreQaFn, RetrievedContext } from "./types"
@@ -25,6 +25,18 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
   const retrievalMsPerQuestion: number[] = []
   // One reranker shared across cases (it caches the cross-encoder model after first load).
   const reranker = config.rerank ? new CrossEncoderReranker() : undefined
+  // BENCHMARK MODE: with CONTEXT_LLM_URL set, ingest via the HYBRID extractor (deterministic +
+  // LLM) - the "with-LLM" numbers, vs the zero-token deterministic default. Point it at a local/
+  // sovereign model (vLLM/Ollama) or any OpenAI-compatible endpoint (a full /chat/completions URL
+  // is used verbatim). Shared across cases; the deterministic extractor still runs underneath.
+  const llmUrl = process.env.CONTEXT_LLM_URL
+  const extractor: KnowledgeExtractor | undefined = llmUrl
+    ? new HybridExtractor(
+        new DeterministicExtractor(),
+        new LlmExtractor({ endpoint: llmUrl, model: process.env.CONTEXT_LLM_MODEL || "default", apiKey: process.env.CONTEXT_LLM_KEY }),
+      )
+    : undefined
+  if (llmUrl) console.log(`(benchmark mode: LLM extraction via ${process.env.CONTEXT_LLM_MODEL || "default"})`)
 
   for (const c0 of cases) {
     // Optional per-case question cap (cheap Tier-B iteration). History is always ingested
@@ -32,7 +44,7 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
     const c = config.maxQuestions && config.maxQuestions > 0 ? { ...c0, questions: c0.questions.slice(0, config.maxQuestions) } : c0
     // Fresh, isolated memory per case - each case is an independent long history, and this
     // also proves the store starts clean (no cross-case leakage inflating recall).
-    const ctx = buildEmbeddedContext({ path: ":memory:", reranker })
+    const ctx = buildEmbeddedContext({ path: ":memory:", reranker, extractor })
     // Distinct user/org ids: both are graph nodes, so identical ids would collide (the org
     // node would clobber the user node under INSERT OR REPLACE). admin ⇒ unrestricted ingest.
     const userId = "bench-user"

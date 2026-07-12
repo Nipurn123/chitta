@@ -67,6 +67,28 @@ chitta bench longmemeval --path ./longmemeval_s.json --tier both
 
 Without `CONTEXT_LLM_URL`, `--tier both` degrades to Tier A with a note.
 
+## Benchmark mode: zero-token vs with-LLM extraction
+
+Chitta's **default is zero-token** — a deterministic extractor pulls typed relations with no LLM.
+On casual conversation (LoCoMo/LongMemEval) that extractor is naturally starved, so the graph is
+thin and retrieval leans on dense+sparse. The competitors you compare against spend an LLM at
+ingestion to turn chat into rich structured facts. To measure the same way, set `CONTEXT_LLM_URL`
+and the benchmark ingests via the **HybridExtractor** (deterministic + LLM):
+
+```bash
+# local / sovereign model (recommended — nothing leaves the box, no per-call cost):
+CONTEXT_LLM_URL=http://localhost:8000 CONTEXT_LLM_MODEL=your-model \
+CONTEXT_EMBEDDINGS=transformers \
+  bun run src/embedded/cli.ts bench locomo --path locomo10.json --tier a --k 10 --rerank
+
+# any OpenAI-compatible endpoint also works (a full /chat/completions URL is used verbatim);
+# thinking models need CONTEXT_LLM_MAX_TOKENS >= ~1500 or the answer comes back empty.
+```
+
+Report **both** numbers — the zero-token default (what ships) and the with-LLM mode (the
+head-to-head) — so the comparison is honest: accuracy *at token cost*. The LLM extraction is
+thousands of calls for a full run, so start with `--limit 1` to sanity-check before a full sweep.
+
 ## Fairness (so the number means something)
 
 1. **Turn on the real pipeline.** The hash embedder + deterministic extractor will score low and

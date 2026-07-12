@@ -53,7 +53,12 @@ export class LlmExtractor implements KnowledgeExtractor {
   }
 
   private async chat(system: string, user: string): Promise<string> {
-    const res = await this.fetch(`${this.cfg.endpoint.replace(/\/$/, "")}/v1/chat/completions`, {
+    // A base URL (local vLLM/Ollama, e.g. http://localhost:8000) gets /v1/chat/completions
+    // appended; a full endpoint that already ends in /chat/completions (e.g. Vertex AI's
+    // OpenAI-compatible URL) is used verbatim.
+    const base = this.cfg.endpoint.replace(/\/$/, "")
+    const url = /\/chat\/completions$/.test(base) ? base : `${base}/v1/chat/completions`
+    const res = await this.fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -62,6 +67,9 @@ export class LlmExtractor implements KnowledgeExtractor {
       body: JSON.stringify({
         model: this.cfg.model,
         temperature: 0,
+        // Thinking models (e.g. Vertex Gemini) spend output tokens on reasoning, so without a
+        // generous cap the answer comes back EMPTY. Default 1024; raise via CONTEXT_LLM_MAX_TOKENS.
+        max_tokens: Number(process.env.CONTEXT_LLM_MAX_TOKENS ?? 1024),
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
