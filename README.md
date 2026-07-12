@@ -283,11 +283,11 @@ All numbers **measured this release** on a dev laptop (hash embedder unless note
 | Benchmark | Metric | Chitta | Notes |
 |---|---|--:|---|
 | **LongMemEval** | recall@10 (Tier-A) | **0.782** | session-level evidence |
-| **LoCoMo** | recall@10 (Tier-A) | **0.531** | 1,986 Q · `bge-small` · rerank off |
-| **LoCoMo** | nDCG@10 / MRR | 0.339 / 0.300 | temporal **0.66** · single-hop **0.60** |
-| **LoCoMo** | context reduction | **153×** | 169 vs 25,864 tokens/question |
+| **LoCoMo** | recall@10 (Tier-A) | **0.525** | 1,986 Q · `bge-small` · rerank on (default) |
+| **LoCoMo** | nDCG@10 / MRR | 0.414 / 0.407 | single-hop **0.61** · reranker +22% / +36% |
+| **LoCoMo** | context reduction | **151×** | 171 vs 25,864 tokens/question |
 
-Retrieval is fully **LLM-free** and hands the reader **169 tokens instead of 25,864** (153× less) at **17.8 ms/question**. Competitors post 90%+ on *end-to-end QA* (an LLM reads the memory and answers) — e.g. Mem0 at **~6,900 tokens/query**; Chitta spends **0**. Compare accuracy *at token cost*.
+Retrieval is fully **LLM-free** and hands the reader **171 tokens instead of 25,864** (151× less). Competitors post 90%+ on *end-to-end QA* (an LLM reads the memory and answers) — e.g. Mem0 at **~6,900 tokens/query**; Chitta spends **0**. Compare accuracy *at token cost*. Note: LoCoMo/LongMemEval are casual conversation, where Chitta's zero-token typed extraction is starved (few relations to extract) — its graph cognition shines on fact-dense data; see [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ### Graph retrieval — **O(1) in graph size**
 
