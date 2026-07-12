@@ -15,7 +15,7 @@
 // memories - so recall/forget stay permission-safe by construction.
 
 import type { EmbeddingProvider } from "../../provider"
-import type { MemoryRepo } from "../store/memories"
+import type { MemoryRepo, ScopeSet } from "../store/memories"
 import { slugify } from "../extract"
 import { sanitizeText } from "../../security/sanitize"
 
@@ -26,7 +26,7 @@ export interface ExperienceOpts {
   /** Optional TTL (ms from now) for episodic memories; procedures never auto-expire. */
   ttlMs?: number
   /** ACL scope for procedural supersession (what the writer can see). Undefined ⇒ global. */
-  scopeVids?: string[]
+  scope?: ScopeSet
 }
 
 export interface EpisodeInput {
@@ -105,7 +105,7 @@ export async function recordProcedure(
   if (!action) return "duplicate"
   const subjectKey = `procedure|${slugify(trigger).slice(0, 64)}`
   const memory = trigger ? `When ${trigger}: ${action}` : action
-  const current = repo.latestBySubject(subjectKey, opts.scopeVids)
+  const current = repo.latestBySubject(subjectKey, opts.scope)
   if (current && current.memory === memory) {
     repo.touch(current.id)
     return "duplicate"

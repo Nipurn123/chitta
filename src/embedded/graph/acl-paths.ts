@@ -25,12 +25,19 @@ export function userRow(sql: SqlAccess, userId: string): (UserDoc & { id: string
 
 export function principalIds(sql: SqlAccess, userId: string): string[] {
   const belongs = sql.rows<{ dst: string }>("SELECT dst FROM edges WHERE src = ? AND label = 'belongsTo'", [userId])
-  const permPrincipals = sql.rows<{ dst: string }>(
-    `SELECT e.dst AS dst FROM edges e JOIN nodes n ON n.id = e.dst
-       WHERE e.src = ? AND e.label = 'permissions'
-         AND n.coll IN ('groups','roles','organizations','teams')`,
-    [userId],
-  )
+  // Permission grants to GROUP-like principals. Driven from the (few) group/role/org/team nodes,
+  // then a dst-anchored edge lookup (small IN-list ⇒ idx_edges_dst) - so this never scans the
+  // user's record-permission edges, which for an owner/admin number O(all their records). That
+  // principal-driven scan was an O(N)-per-call cost on every ingest belief-revision ACL check.
+  const groupNodes = sql
+    .rows<{ id: string }>("SELECT id FROM nodes WHERE coll IN ('groups','roles','organizations','teams')", [])
+    .map((r) => r.id)
+  const permPrincipals = groupNodes.length
+    ? sql.rows<{ dst: string }>(
+        `SELECT dst FROM edges WHERE label = 'permissions' AND dst IN (${sql.ph(groupNodes.length)}) AND src = ?`,
+        [...groupNodes, userId],
+      )
+    : []
   return [...new Set([userId, ...belongs.map((r) => r.dst), ...permPrincipals.map((r) => r.dst)])]
 }
 

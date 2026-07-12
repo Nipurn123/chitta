@@ -10,6 +10,7 @@ import { guardIngest } from "../security/limits"
 import { sanitizeBody, sanitizeLabel } from "../security/sanitize"
 import { consolidateTriples } from "./memory/consolidate"
 import { recordEpisodes, recordProcedures } from "./memory/experience"
+import type { ScopeSet } from "./store/memories"
 
 // Optional default TTL for dynamic memories (CONTEXT_MEMORY_TTL_DAYS). Unset ⇒ memories
 // never auto-expire; set ⇒ non-static memories get a forget_after and the TTL sweep
@@ -65,9 +66,10 @@ export interface IngestDoc {
   episodes?: Array<{ event: string; occurredAt?: number | string; actors?: string[] }>
   /** Learned how-tos / preferences → PROCEDURAL memory (trigger → action; supersede on change). */
   procedures?: Array<{ trigger?: string; action: string }>
-  /** INTERNAL (set by the authorized write path): the writer's accessible virtual_record_ids,
-   *  so belief revision only supersedes memories the writer can see. Undefined ⇒ global. */
-  scopeVids?: string[]
+  /** INTERNAL (set by the authorized write path): the writer's accessible virtual_record_ids as
+   *  a membership set, so belief revision only supersedes memories the writer can see - in
+   *  O(subject-versions), not O(accessible-set). Undefined ⇒ global. */
+  scope?: ScopeSet
 }
 
 /** Structure-aware chunker. The old greedy-merge packed many DISTINCT facts into one
@@ -255,7 +257,7 @@ export class Ingestor {
         sourceRecordId: doc.recordId,
         ttlMs: memoryTtlMs(),
         resolve: (name) => this.store.resolveEntity(name)?.id ?? null,
-        scopeVids: doc.scopeVids,
+        scope: doc.scope,
       })
     }
 
@@ -281,7 +283,7 @@ export class Ingestor {
         this.store.memories,
         this.embeddings,
         doc.procedures.map((p) => ({ trigger: p.trigger ?? "", action: p.action })),
-        { orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId, scopeVids: doc.scopeVids },
+        { orgId: doc.orgId, virtualRecordId: vid, sourceRecordId: doc.recordId, scope: doc.scope },
       )
     }
 

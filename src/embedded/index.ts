@@ -20,6 +20,7 @@ import type { EmbeddingProvider } from "../provider"
 import type { RetrievalResponse } from "../types"
 import { hybridSearch } from "./retrieval/hybrid-retriever"
 import { consolidateTriples } from "./memory/consolidate"
+import type { ScopeSet } from "./store/memories"
 import { nameMatch, typeBucket, type EntityCandidate } from "./graph/entity-resolution"
 import { cosine } from "./retrieval/passage"
 import { decodeF32 } from "./store/vector-blob"
@@ -188,9 +189,26 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     // ingest can't clobber another user's PRIVATE memory (different visibility), while a
     // shared/org-wide fact still updates once for everyone who can see it, and two
     // contradicting facts inside THIS record still resolve.
-    const acc = await graph.getAccessibleVirtualRecordIds({ userId: actingUserId, orgId: doc.orgId })
-    const scopeVids = [...new Set([...Object.values(acc), doc.virtualRecordId ?? doc.recordId])]
-    return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals, scopeVids })
+    // Belief-revision scope, computed CHANGE-PROPORTIONALLY: rather than materialize the writer's
+    // whole accessible set (O(N) per ingest → O(N²) for a bulk import), lazily ACL-check only the
+    // few records a subject's live memories are actually anchored to, memoized per write. The
+    // record being created is always visible to its writer (short-circuit) - which also covers
+    // intra-record supersession before the new node is queryable.
+    const selfVid = doc.virtualRecordId ?? doc.recordId
+    const seen = new Map<string, boolean>()
+    const scope: ScopeSet = {
+      has: (vid: string): boolean => {
+        if (vid === selfVid) return true
+        let ok = seen.get(vid)
+        if (ok === undefined) {
+          ok = graph.canAccess(actingUserId, doc.orgId, vid)
+          seen.set(vid, ok)
+        }
+        return ok
+      },
+      size: 1, // non-zero: the writer can always see the record they're creating
+    }
+    return ingestor.ingest({ ...doc, ownerId: actingUserId, permittedPrincipals: principals, scope })
   }
 
   // Authorized delete: only the owner or an admin may remove a record (+ its

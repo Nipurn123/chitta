@@ -9,6 +9,14 @@ import { Database } from "bun:sqlite"
 import { ph } from "./schema"
 import { encodeF32 } from "./vector-blob"
 
+/** Membership view of the ACL scope for belief revision. A real Set<string> satisfies it; the
+ *  ingest path passes a LAZY implementation whose `.has` does a targeted, memoized ACL check per
+ *  record - so revision never materializes the whole accessible set. Only `.has` + `.size` used. */
+export interface ScopeSet {
+  has(id: string): boolean
+  readonly size: number
+}
+
 export interface MemoryRow {
   id: string
   org_id: string
@@ -64,24 +72,25 @@ export class MemoryRepo {
   constructor(private readonly db: Database) {}
 
   /** The current (live) memory for a subject_key, if any. "Live" = latest, not forgotten.
-   *  When `scopeVids` is provided, the search is RESTRICTED to those virtual_record_ids -
-   *  the same ACL gate the read path uses - so consolidation/contradiction only ever
-   *  supersede a belief the writer can actually SEE. Without it (undefined), the search is
-   *  global (the legacy behavior; used by direct/test call sites). An explicit EMPTY scope
-   *  means "nothing visible" → no match. */
-  latestBySubject(subjectKey: string, scopeVids?: string[]): MemoryRow | undefined {
-    if (scopeVids && scopeVids.length === 0) return undefined
-    if (scopeVids && scopeVids.length > 0) {
-      return this.db
-        .query(
-          `SELECT * FROM memories WHERE subject_key = ? AND is_latest = 1 AND is_forgotten = 0
-             AND virtual_record_id IN (${ph(scopeVids.length)}) ORDER BY version DESC LIMIT 1`,
-        )
-        .get(subjectKey, ...scopeVids) as MemoryRow | undefined
-    }
-    return this.db
-      .query("SELECT * FROM memories WHERE subject_key = ? AND is_latest = 1 AND is_forgotten = 0 ORDER BY version DESC LIMIT 1")
-      .get(subjectKey) as MemoryRow | undefined
+   *  When `scope` is provided the match is RESTRICTED to virtual_record_ids the writer can SEE -
+   *  the same ACL gate the read path uses - so consolidation/contradiction only ever supersede a
+   *  belief the writer can actually see. Without it (undefined) the search is global (legacy;
+   *  direct/test call sites). An explicit EMPTY scope means "nothing visible" → no match.
+   *
+   *  SCALE-INVARIANT: a subject_key has only a HANDFUL of live rows (at most one per distinct
+   *  ACL scope currently asserting it), so we fetch those (indexed by subject_key,is_latest) and
+   *  membership-test them in JS - O(live-rows-for-subject), NOT O(accessible-set). This is what
+   *  turns ingest from O(N²) (an IN-list of the whole ACL per triple) into ~O(N). */
+  latestBySubject(subjectKey: string, scope?: ScopeSet): MemoryRow | undefined {
+    if (scope && scope.size === 0) return undefined
+    const rows = this.db
+      .query(
+        "SELECT * FROM memories WHERE subject_key = ? AND is_latest = 1 AND is_forgotten = 0 ORDER BY version DESC LIMIT 256",
+      )
+      .all(subjectKey) as MemoryRow[]
+    if (!scope) return rows[0]
+    for (const r of rows) if (scope.has(r.virtual_record_id)) return r
+    return undefined
   }
 
   insert(m: NewMemory): void {

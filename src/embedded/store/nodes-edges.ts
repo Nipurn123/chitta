@@ -53,7 +53,15 @@ function addProvenance(db: Database, src: string, dst: string, label: string, re
 // edge's provenance - deleting the edge if no other record still asserts it, else
 // lowering its weight to the surviving source count.
 export function clearRecordContributions(db: Database, recordId: string): void {
+  // Fast exit for a BRAND-NEW record (the overwhelmingly common case at ingest): a record that
+  // has never been written has no mentions edges, so it has contributed nothing - and we can skip
+  // the provenance scan below entirely. That scan is `provenance LIKE '%recordId%'`, a leading-
+  // wildcard match no index can serve → a full edge-table scan (O(total edges)). Running it on
+  // every fresh write was turning bulk ingest into O(N²); gating it on "seen before" makes the
+  // common path O(1). (Re-ingest of an existing record still prunes correctly.)
+  const seen = db.query("SELECT 1 FROM edges WHERE src = ? AND label = 'mentions' LIMIT 1").get(recordId)
   db.query("DELETE FROM edges WHERE src = ? AND label = 'mentions'").run(recordId)
+  if (!seen) return // never ingested before → nothing to prune, skip the O(N) provenance scan
   const rows = db
     .query("SELECT src, dst, label, provenance FROM edges WHERE provenance LIKE ?")
     .all(`%${JSON.stringify(recordId).slice(1, -1)}%`) as Array<{ src: string; dst: string; label: string; provenance: string }>

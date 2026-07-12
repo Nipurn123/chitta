@@ -134,7 +134,19 @@ export class EntityAliasRepo implements AliasStore {
     this.ensureTokensBackfilled()
     const tokens = blockingTokens(surface, bucket)
     if (tokens.length === 0) return []
-    const ph = tokens.map(() => "?").join(",")
+    // Skip HUB blocking tokens - ones carried by very many entities (e.g. every "PersonNNNN"
+    // shares "person"). They're NON-discriminating: a real merge always shares a distinctive
+    // token, so a hub token only floods candidate generation with up-to-LIMIT rows that never
+    // match - which made resolving each new entity O(hub) and ingest O(N²). The hub test is a
+    // LIMIT (hub+1) count, so it costs O(hub), not O(token-frequency). Same principle as the
+    // graph hub-skip. If EVERY token is a hub, there's no discriminating key ⇒ treat as new.
+    const HUB = Number(process.env.CONTEXT_ENTITY_HUB ?? 128)
+    const discriminating = tokens.filter(
+      (t) =>
+        (this.db.query(`SELECT COUNT(*) c FROM (SELECT 1 FROM entity_tokens WHERE token = ? LIMIT ${HUB + 1})`).get(t) as { c: number }).c <= HUB,
+    )
+    if (discriminating.length === 0) return []
+    const ph = discriminating.map(() => "?").join(",")
     const rows = this.db
       .query(
         `SELECT n.id AS id, n.data AS data
@@ -142,7 +154,7 @@ export class EntityAliasRepo implements AliasStore {
           WHERE t.token IN (${ph}) AND n.coll = 'entities'
           LIMIT 200`,
       )
-      .all(...tokens) as Array<{ id: string; data: string }>
+      .all(...discriminating) as Array<{ id: string; data: string }>
     const out = new Map<string, EntityCandidate>()
     for (const r of rows) {
       const d = safeParseData(r.data)
