@@ -1,0 +1,39 @@
+<svg width="600" height="372" viewBox="0 0 600 372" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="Tweet by Andrej Karpathy about LLM knowledge bases">
+  <title>Andrej Karpathy — LLM Knowledge Bases</title>
+  <defs>
+    <filter id="cardShadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="7" flood-color="#0f1419" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <!-- card -->
+  <rect x="14" y="10" width="572" height="344" rx="18" fill="#ffffff" stroke="#e6ecf0" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+  <!-- avatar (initials, not a photo) -->
+  <circle cx="64" cy="58" r="24" fill="#1d9bf0"/>
+  <text x="64" y="65" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle">AK</text>
+
+  <!-- name + handle -->
+  <text x="100" y="52" font-size="19" font-weight="700" fill="#0f1419">Andrej Karpathy</text>
+  <text x="100" y="74" font-size="15" fill="#536471">@karpathy</text>
+
+  <!-- X logo -->
+  <path transform="translate(534,42) scale(0.95)" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" fill="#0f1419"/>
+
+  <!-- title line of the tweet -->
+  <text x="40" y="122" font-size="20" font-weight="700" fill="#0f1419">LLM Knowledge Bases</text>
+
+  <!-- body (verbatim) -->
+  <text font-size="17" fill="#0f1419">
+    <tspan x="40" y="156">Something I'm finding very useful recently: using</tspan>
+    <tspan x="40" y="182">LLMs to build personal knowledge bases for various</tspan>
+    <tspan x="40" y="208">topics of research interest. In this way, a large</tspan>
+    <tspan x="40" y="234">fraction of my recent token throughput is going</tspan>
+    <tspan x="40" y="260">less into manipulating code, and more into</tspan>
+    <tspan x="40" y="286">manipulating knowledge. […]</tspan>
+  </text>
+
+  <!-- divider + date -->
+  <line x1="40" y1="312" x2="560" y2="312" stroke="#eff3f4" stroke-width="1"/>
+  <text x="40" y="338" font-size="14" fill="#536471">Apr 3, 2026 · x.com/karpathy</text>
+</svg>

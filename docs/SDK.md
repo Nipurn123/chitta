@@ -1,6 +1,6 @@
 # Chitta SDK
 
-Permission-aware, **zero-token** knowledge-graph + vector memory for AI agents — in-process, no servers. Chitta runs on **Bun** (it uses `bun:sqlite`), stores everything in a single SQLite file, and never spends LLM tokens to remember or retrieve.
+**Zero-token**, local knowledge-graph + vector memory for AI agents — permanent memory that persists across sessions, in-process, no servers to run. Chitta runs on **Bun** (it uses `bun:sqlite`), stores everything in a single SQLite file, and never spends an LLM token to remember or retrieve. It's permission-aware from the same engine, too, so the identical store scales from a single agent to a whole team once you need that - see "Multi-tenant / per-user ACL" below.
 
 ```bash
 bun add @100xprompt/chitta
@@ -58,7 +58,7 @@ await memory.graph.central()                          // most-connected concepts
 
 ## Multi-tenant / per-user ACL (the moat)
 
-Every read is filtered to what the asking user may see — enforced **before** search, so a memory can never leak across a permission boundary.
+Everything above works for a single agent out of the box. When memory needs to scale to a team, the same store goes multi-tenant with no migration: every read is filtered to what the asking user may see — enforced **before** search, so a memory can never leak across a permission boundary.
 
 ```ts
 const alice = memory.user("alice", { role: "editor" })

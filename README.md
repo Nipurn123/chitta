@@ -31,7 +31,7 @@
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-270%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-326%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -42,25 +42,39 @@
 <p align="center"><sub>A real Chitta knowledge graph - 285 concepts, 291 relationships, colored by type, labeled hubs. <a href="docs/assets/chitta-graph.mp4">▶ full-quality MP4</a></sub></p>
 
 ***Chitta*** (चित्त) - in Indian philosophy, the mind's storehouse where every impression is
-kept. Permission-aware **memory for AI agents**, by **[100xprompt](https://github.com/Nipurn123)**.
+kept. **Permanent memory for your AI coding agent**, by **[100xprompt](https://github.com/Nipurn123)**.
 
-Permission-aware **knowledge graph + vector memory** — usable as a standalone **MCP server** *or*
-an embeddable **SDK**. Any MCP client (Claude Code, 100xprompt, Claude Desktop, Cursor, IDEs) uses
-it via config; any Bun app uses it as a library.
+Your coding agent forgets everything between sessions - every morning you re-explain your
+project, your stack, your preferences to a tool with amnesia. Chitta gives it a **permanent,
+local brain**: it **remembers across sessions**, builds a **knowledge graph** of what it learns,
+runs **fully offline on one SQLite file**, and spends **zero LLM tokens** to store or recall.
+One command wires it into the agent you already use (Claude Code, Cursor, Codex - **17 tools**),
+or import it as an embeddable **SDK**.
+
+**Your agent's memory shouldn't cost a fortune in tokens.** Stuffing your notes into every
+prompt burns thousands of tokens per call — and the agent *still* forgets tomorrow. Chitta
+fixes both:
+
+- 📉 **Up to 143× less context per query** — retrieves the ~181 tokens that matter instead of dumping 25,864 into the prompt (measured on LoCoMo; the ratio grows with your corpus)
+- ⚡ **Zero LLM tokens to store *or* recall** — local embeddings + a deterministic knowledge graph do the work, not an LLM (competitors spend ~6,900 tokens/query; Chitta spends **0**)
+- 🧠 **Remembers across sessions** — permanent memory, not per-chat context you re-paste every morning
+- 🔒 **100% local & offline** — one SQLite file, no API keys, nothing leaves your machine
 
 ```ts
 import { Chitta } from "@100xprompt/chitta"
 const memory = new Chitta({ path: "./memory.db" })
 await memory.remember("Sarah works at Meta.", { relations: [{ from: "Sarah", to: "Meta", type: "works_at" }] })
-await memory.recall("where does Sarah work?")     // hybrid, reranked, ACL-filtered — zero LLM tokens
+await memory.recall("where does Sarah work?")     // hybrid, reranked, local — zero LLM tokens
 ```
 
 **→ Full SDK guide: [docs/SDK.md](docs/SDK.md)** (multi-tenant ACL, typed graph, self-correction, temporal, scaling flags).
 
-Point your AI assistant at it once, and every conversation can **store, recall, and reason over**
-your team's knowledge - with each user seeing only what their permissions allow.
+Point your agent at it once, and every session can **store, recall, and reason over** what you
+told it before - so you stop repeating yourself.
 
-> The part every other memory layer treats as an afterthought: who is allowed to remember what.
+**Works solo, scales to your team.** The same store is **permission-aware** - point it at a
+shared backend and your whole team works off one graph, each person seeing only what their
+access allows (the part every other memory layer treats as an afterthought).
 
 > **Architecture & internals:** see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -68,9 +82,58 @@ your team's knowledge - with each user seeing only what their permissions allow.
 - **Central-office mode:** point it at a shared backend (ArangoDB + Qdrant + embeddings) via env; the
   whole org shares one graph, each user sees only what their ACL permits.
 
-## See it in 30 seconds
+## The idea behind Chitta
 
-Two users, one store, three documents - each user sees only what they're allowed to:
+We didn't invent this idea — we engineered it. In April 2026, Andrej Karpathy described spending
+his tokens *"manipulating knowledge, not code"*: use an LLM to build a knowledge base **once**,
+then query it — instead of re-reasoning (and re-paying) for the same thing on every call.
+
+<p align="center">
+  <a href="https://x.com/karpathy/status/2039805659525644595"><img src="docs/assets/karpathy-idea.svg" width="560" alt="Andrej Karpathy: using LLMs to build personal knowledge bases — 'my token throughput is going less into manipulating code, and more into manipulating knowledge.'"/></a>
+</p>
+<p align="center"><sub>Andrej Karpathy on LLM knowledge bases — <a href="https://x.com/karpathy/status/2039805659525644595">the tweet</a>. His general take on the approach, not an endorsement of Chitta.</sub></p>
+
+**Chitta is that principle, automated.** Karpathy hand-prompts an LLM to maintain a markdown wiki;
+Chitta builds a **permission-aware knowledge graph** from whatever your agent already sees, keeps
+it current (self-correcting, temporal), and answers from it at **zero tokens** — no LLM in the
+recall path at all. The intelligence goes in once, at write time; every recall after that is free.
+
+## See it remember (30 seconds)
+
+The whole point, in one command — **two separate processes** sharing one file. Session 1 learns
+a few things and exits; a brand-new session 2 opens the same file and *remembers*:
+
+```bash
+bun install
+./examples/agent-memory/run.sh
+```
+
+```
+SESSION 1  ── learns 5 things → writes ./agent-memory.db → process exits ──
+  remembered  Chitta runs on Bun and stores everything in bun:sqlite…
+  remembered  Nipurn prefers TypeScript with 2-space indentation and no semicolons…
+  → persisted: 5 records · 10 entities · 5 chunks · then the process is gone
+
+SESSION 2  ── a brand-new process, the SAME file ──
+  BEFORE  Q: what does Chitta run on?   A: ¯\_(ツ)_/¯  I just started up, no idea.
+  AFTER   Q: what does Chitta run on?   A: Chitta runs on Bun and stores everything in
+                                           bun:sqlite — no servers, fully local.   (0.294)
+          Q: what indentation does Nipurn prefer?
+                                        A: TypeScript, 2-space indentation, no semicolons.  (0.263)
+
+  KNOWLEDGE GRAPH  (rebuilt from the file, not an LLM)
+     Chitta ──runs_on──▶ Bun            Chitta ──written_in──▶ TypeScript
+     Chitta ──stores_data_in──▶ bun:sqlite     Nipurn ──prefers──▶ TypeScript
+```
+
+Session 2 never saw session 1 run — it just opened the file, recalled the facts, and rebuilt the
+graph. That's cross-session memory: **zero tokens, fully local**. Full walkthrough:
+[examples/agent-memory](examples/agent-memory/).
+
+## The team moat: permission-aware in 30 seconds
+
+When you *do* add teammates, the same store enforces who-can-see-what. Two users, one store,
+three documents - each sees only what they're allowed to:
 
 ```bash
 bun install
@@ -93,6 +156,24 @@ the vector index is touched. Full walkthrough: [examples/permission-aware-retrie
 **Benchmark:** on a small permission-scoped knowledge base, retrieval delivers
 **7.4× fewer tokens** than dumping the whole corpus into context (more as the corpus
 grows) - with **zero cross-user leak**. Reproducible: [examples/token-reduction](examples/token-reduction/).
+
+## How Chitta compares
+
+The honest, fully-sourced version (every competitor claim linked) is in
+[docs/launch/comparison.md](docs/launch/comparison.md). The short version:
+
+| | **Chitta** | **mem0** | **Zep / Graphiti** | **supermemory** |
+|---|:--:|:--:|:--:|:--:|
+| **Zero LLM tokens** to store & recall | ✅ | ❌ | ❌ | ❌ |
+| **Runs fully local** (no cloud LLM) | ✅ | ⚠️ | ⚠️ | ✅ |
+| **Permission-aware ACL** on a *shared* graph | ✅ | ❌ | ⚠️ | ⚠️ |
+| **Knowledge graph** | ✅ | ⚠️ | ✅ | ✅ |
+| **Installs into AI coding tools** (MCP) | ✅ 17 | ✅ | ✅ | ✅ |
+| **License** | MIT | Apache-2.0 | Apache-2.0 | MIT |
+
+<sub>⚠️ = partial, or a different mechanism (e.g. per-user graph *isolation* rather than filtered visibility on one shared graph). Full nuance + sources: [comparison.md](docs/launch/comparison.md).</sub>
+
+**On accuracy benchmarks:** everyone measures differently — competitors publish *with-LLM* QA accuracy (an LLM reads the memory and answers the question), while Chitta's **0.552 on LoCoMo** is a **zero-token recall** number. Different scale — and the competitors' figures are themselves publicly disputed. We don't claim to "beat" anyone on a contested metric; we do the job at **zero tokens**. See [the full comparison](docs/launch/comparison.md).
 
 ## Install
 
@@ -208,7 +289,7 @@ model** - the part most memory products treat as proprietary magic, here done na
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 270 tests
+bun test                          # 326 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 

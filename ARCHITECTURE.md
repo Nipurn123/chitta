@@ -1,11 +1,12 @@
 # Architecture
 
-Chitta is a permission-aware **knowledge graph + vector memory**, exposed as a standalone **MCP server**. The retrieval/ACL logic is native TypeScript; backends are pluggable behind interfaces. It runs in two shapes from the same code:
+Chitta is a **zero-token, local knowledge graph + vector memory** for AI agents, exposed as a standalone **MCP server**. Point a coding agent (Claude Code, Cursor, or anything else that speaks MCP) at it and it remembers permanently across sessions, restarts, and new chats - no LLM token spent to store or retrieve, no server to run. The default shape is as simple as that gets: one SQLite file, in-process embeddings, zero infrastructure.
 
-- **Local mode (default)** - one SQLite file, in-process embeddings, zero servers.
-- **Central-office mode** - the same interfaces backed by ArangoDB + Qdrant + an HTTP embedding service, so a whole org shares one graph while each user sees only what their ACL permits.
+The retrieval logic - including permissions - is native TypeScript, and every backend it talks to sits behind an interface. That means the same engine that runs locally on one machine can also scale up to a shared, multi-user deployment without touching the retrieval/ACL logic - see ["the seam"](#the-seam-one-interface-two-backends) below for how local mode and central-office mode split.
 
 ## Pipeline
+
+Every `remember` / `recall` call runs this pipeline in-process - no LLM in the loop, and in local mode, no network hop either:
 
 ```
 INGEST                                              QUERY
@@ -19,6 +20,11 @@ text ─► record node + permission edges (ACL)        question ─► ACL: whi
 Every stage is a single module behind an interface. Data flows as plain objects and a property graph (`nodes` + `edges`) - no shared mutable state, no side effects outside the SQLite file (local) or the configured backend (central).
 
 ## The seam: one interface, two backends
+
+Chitta runs in two shapes from the same code:
+
+- **Local mode (default)** - one SQLite file, in-process embeddings, zero servers. This is what a single developer or agent gets out of the box.
+- **Central-office mode** - the same interfaces backed by ArangoDB + Qdrant + an HTTP embedding service, so a whole org can share one graph while each user still only sees what their ACL permits - useful once memory needs to scale past one person.
 
 `src/provider.ts` defines the contracts (`GraphProvider`, `VectorDBService`, `EmbeddingProvider`). `src/service.ts` wires config → the right implementation. The **ACL + retrieval logic is identical** across modes - only the storage backend swaps.
 
@@ -117,7 +123,7 @@ If an extension-capable SQLite is available, the store loads [sqlite-vec](https:
 
 ## The security invariant
 
-Every read goes through the ACL graph **before** the vector index is touched: the graph answers *"which record ids may this user see?"*, and the vector search is restricted to that set. A final **cross-connector leak guard** prevents results from one source bleeding into another. The permission check is never a post-filter you can forget - it's the gate that produces the candidate set.
+This is what makes it safe to grow Chitta from one person's local memory into a shared team deployment - every read goes through the ACL graph **before** the vector index is touched: the graph answers *"which record ids may this user see?"*, and the vector search is restricted to that set. A final **cross-connector leak guard** prevents results from one source bleeding into another. The permission check is never a post-filter you can forget - it's the gate that produces the candidate set.
 
 ## Adding a new backend
 
