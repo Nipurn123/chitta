@@ -287,6 +287,17 @@ export class Chitta {
     return this.me().graph
   }
 
+  /** Export the full accessible knowledge graph as ONE self-contained, interactive HTML page —
+   *  Chitta's shareable "what your agent remembers" artifact. Returns the HTML string; write it to
+   *  a `.html` file and open in any browser (force-directed, colored by type, search + zoom). */
+  async graphHtml(opts: { title?: string } = {}): Promise<string> {
+    const { renderGraphHtml } = await import("./embedded/graph-html")
+    const u = this.me()
+    const accessible = await this.ctx.graph.getAccessibleVirtualRecordIds({ userId: u.userId, orgId: u.orgId })
+    const recordIds = [...new Set(Object.values(accessible))] as string[]
+    return renderGraphHtml(this.ctx.graph.getKnowledgeGraph(recordIds), opts)
+  }
+
   /** Store stats + engine info. */
   about() {
     const c = (sql: string) => (this.ctx.store.db.query(sql).get() as { c: number }).c

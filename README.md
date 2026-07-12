@@ -31,7 +31,7 @@
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-326%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-329%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -39,7 +39,7 @@
 <p align="center">
   <a href="docs/assets/chitta-graph.mp4"><img src="docs/assets/chitta-graph.gif" width="640" alt="Chitta knowledge graph - a rotating 3D constellation of concepts, colored by type and linked by relationships"/></a>
 </p>
-<p align="center"><sub>A real Chitta knowledge graph - 285 concepts, 291 relationships, colored by type, labeled hubs. <a href="docs/assets/chitta-graph.mp4">▶ full-quality MP4</a></sub></p>
+<p align="center"><sub>A real Chitta knowledge graph - 285 concepts, 291 relationships, colored by type, labeled hubs. <a href="docs/assets/chitta-graph.mp4">▶ full-quality MP4</a> · make your own with <code>chitta graph --open</code></sub></p>
 
 ***Chitta*** (चित्त) - in Indian philosophy, the mind's storehouse where every impression is
 kept. **Permanent memory for your AI coding agent**, by **[100xprompt](https://github.com/Nipurn123)**.
@@ -245,6 +245,7 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 ```bash
 chitta doctor                      # config + health: identity, encryption, ANN, audit, counts
+chitta graph --open                # → a self-contained interactive HTML of everything your agent remembers
 chitta sleep                       # sleep-time consolidation: dedupe entities, retire expired, re-weight
 chitta bench synthetic             # measure memory quality (retrieval + end-to-end QA) - see docs/BENCHMARKING.md
 
@@ -293,7 +294,7 @@ model** - the part most memory products treat as proprietary magic, here done na
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 326 tests
+bun test                          # 329 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 

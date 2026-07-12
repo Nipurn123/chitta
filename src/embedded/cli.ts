@@ -111,6 +111,27 @@ async function main() {
     return
   }
 
+  // graph: export the accessible knowledge graph to ONE self-contained, interactive HTML file —
+  // Chitta's shareable "here's what your agent remembers" artifact (open it in any browser).
+  if (cmd === "graph") {
+    const { personalContext, identity } = await import("./personal")
+    const { renderGraphHtml } = await import("./graph-html")
+    const id = identity()
+    const ctx = personalContext()
+    const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: id.userId, orgId: id.orgId })
+    const recordIds = [...new Set(Object.values(accessible))] as string[]
+    const g = ctx.graph.getKnowledgeGraph(recordIds)
+    const out = arg("--out", "chitta-graph.html")!
+    await Bun.write(out, renderGraphHtml(g, { title: arg("--title") ?? "What Chitta remembers" }))
+    console.log(`✓ ${g.entities.length} concepts · ${g.relations.length} relationships → ${out}`)
+    if (has("--open")) {
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open"
+      try { Bun.spawn([opener, out]) } catch { /* opening is best-effort */ }
+    }
+    ctx.store.close()
+    return
+  }
+
   // bench: run the memory benchmark framework (Tier A retrieval, + Tier B end-to-end QA when
   // an LLM is configured). Builds its own per-case contexts, so it needs no shared store.
   if (cmd === "bench") {
@@ -221,7 +242,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: doctor | sleep | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | sleep | graph [--out f] [--open] | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }
