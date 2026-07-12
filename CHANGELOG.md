@@ -6,6 +6,87 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] - 2026-07-12
+
+This cycle makes Chitta an embeddable, production-ready memory layer and proves it **scales**.
+It ships an ergonomic **SDK**, framework **tool adapters**, typed errors + observability, and
+CI/publish automation — on top of an engine hardened to be **sub-linear**: O(1)-in-N graph
+retrieval, near-linearithmic ingest, ACL-first filtered-ANN, and an opt-in plaintext DiskANN
+index. It also lands the full **deep-memory cognition program** (entity resolution,
+episodic/procedural memory, temporal reasoning, self-correction) and a real memory-benchmark
+framework (both detailed in the sub-sections below).
+
+### Added
+
+- **The Chitta SDK — an ergonomic, importable API.** `new Chitta({ path })` gives an in-process,
+  permission-aware, **zero-token** knowledge-graph + vector memory with no servers and no config:
+  `remember` / `rememberMany` / `recall` / `facts` / `recallAll` / `forget` / `profile` /
+  `timeline` / `asOf` / `graph.*`, plus `.user(id)` for multi-tenant per-user ACL and `.ctx` as a
+  low-level escape hatch. Fully typed (`ChittaOptions` / `RememberOptions` / `Recalled` / `Entity` /
+  `Relation`) and exported from the package root and `@100xprompt/chitta/sdk`. Docs:
+  [docs/SDK.md](docs/SDK.md), [docs/API.md](docs/API.md).
+- **`rememberMany`** — batch ingest; each item is a full `remember` (its own record + typed graph),
+  returning the ids in input order.
+- **Framework tool adapters (`chittaTools`).** Dependency-free `{ rememberMemory, recallMemory }`
+  tool definitions (`description` + JSON-Schema `parameters` + async `execute`) shaped as the common
+  denominator across the **Vercel AI SDK**, **OpenAI**, and **Anthropic** tool APIs — pass a
+  `.user(id)` for per-user ACL. `@100xprompt/chitta/adapters/ai-tools`; docs
+  [docs/adapters.md](docs/adapters.md).
+- **Typed errors + fail-fast config validation.** A tiny error hierarchy — `ChittaError` (stable,
+  machine-readable `err.code`) and `ConfigError` — plus `ChittaOptions` validation at construction,
+  so a bad `embeddings` mode or empty `path` throws an actionable message instead of failing deep in
+  the engine.
+- **`onEvent` observability hook.** Fired after `remember` / `recall` / `facts` with
+  `{ op, ms, count? }`; guarded and try/catch-wrapped (a throwing handler can never break a call) and
+  zero-overhead when unset.
+- **Temporal-validity-aware ranking (zero-token).** Retrieval prefers currently-valid facts over
+  superseded ones, so time-sensitive answers track the latest truth without an LLM in the loop.
+- **Query-entity-anchored graph multi-hop (zero-token).** A query that names a known entity seeds a
+  **bounded** multi-hop expansion from that entity's node; plus pseudo-relevance-feedback (PRF)
+  second-hop recall. Seeding is bounded and the typed extractor hardened.
+- **LLM-free typed relations.** The deterministic extractor now activates the full cognition stack
+  (typed triples, belief revision, memory typology) with **zero tokens**.
+- **Scaling flags.** `CONTEXT_DISKANN=1` (plaintext native DiskANN, opt-in),
+  `CONTEXT_EMBED_PROFILE` (one-liner model upgrade: `fast` | `english-large` | `multilingual` |
+  `on-device`), `CONTEXT_FILTER_FIRST_MAX` (filtered-ANN threshold, default 2000),
+  `CONTEXT_GRAPH_BOUNDED` (bounded graph hop).
+- **CI / publish / benchmark workflows + deployment docs.** `.github/workflows/ci.yml` (typecheck +
+  `bun test` on push/PR), `publish.yml` (GitHub Release → gated `bun test` → `bun publish`, via the
+  `NPM_TOKEN` secret), and `benchmark.yml`. New [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md),
+  [docs/PERFORMANCE.md](docs/PERFORMANCE.md), and [docs/RELEASING.md](docs/RELEASING.md).
+
+### Changed
+
+- **Filtered-ANN is the default dense path for scoped users.** When a user's accessible set is
+  selective (≤ `CONTEXT_FILTER_FIRST_MAX`, default 2000), the dense stage scans **exactly the
+  accessible vectors** (via a `virtual_record_id` index) — O(accessible), **leak-proof by
+  construction**, and still exact. No flag; measured recall is **identical (Δ = 0)**.
+- **Blend-rerank option** — recall-preserving rank fusion, wired into the reranker and the benchmark.
+
+### Performance
+
+- **Graph retrieval is O(1) in graph size.** The `relates_to` expansion is now **bounded**, so
+  latency stays flat (~0.05 ms) from 50K→100K records where an unbounded hop climbs to ~2 ms —
+  **≈39× faster at 100K**, with recall **+0.6%** on LoCoMo Tier-A (bounding also trims off-topic
+  expansion). Toggle `CONTEXT_GRAPH_BOUNDED`.
+- **Ingest O(N²) → ~O(N log N).** Belief-revision + ACL checks are now **change-proportional**
+  (driven by the record being written, not the whole corpus): ~16× more data for only ~2.9× the
+  per-record cost (0.60 ms @1K → 1.72 ms @16K), where the old path grew quadratically and timed out
+  by 20K.
+- **Plaintext DiskANN (opt-in, `CONTEXT_DISKANN=1`).** libSQL's native DiskANN, in plaintext, keeps
+  ANN latency **flat (~8 ms)** vs `vec0`'s linear growth (51 ms @100K → ~6×), at 0.98 top-10 recall
+  overlap. Honest tradeoff: ~80× per-vector ingest cost and an ~8 ms query floor — for **large,
+  read-heavy, static** corpora only (`vec0` still wins below the ~15–18K crossover). Never a default.
+
+### Fixed
+
+- **Bounded / hardened query-entity graph seeding** and a hardened deterministic typed extractor.
+- **Benchmark fidelity** — attribute each turn with speaker + date, and ingest the session/event
+  date into memory; the Tier-B LLM client accepts full endpoint URLs + `max_tokens`; a `--max-q`
+  question cap enables cheap Tier-B iteration.
+
 ### Added — Deep-memory program (cognition layer)
 
 - **Stage 1 — Canonical graph (entity resolution / coreference).** Entity ids were

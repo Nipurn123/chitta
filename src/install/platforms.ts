@@ -20,11 +20,13 @@ const vscodeUser = (): string => join(appData(), "Code", "User")
 export type Format =
   | "json"   // JSON object: container[key][name] = entry
   | "json-array" // JSON: container[key] is an ARRAY of entries (Trae)
+  | "yaml"   // YAML: merge chitta into container[key] (Goose)
+  | "yaml-file" // a dedicated standalone YAML block file we fully own (Continue.dev)
   | "toml"   // Codex TOML
   | "manual" // no stable on-disk path → print instructions
 
 /** The per-tool server-entry dialect. */
-export type Entry = "standard" | "vscode" | "zed" | "local" | "trae"
+export type Entry = "standard" | "vscode" | "zed" | "local" | "trae" | "goose" | "continue"
 
 export interface Platform {
   id: string
@@ -35,6 +37,9 @@ export interface Platform {
   entry?: Entry
   /** absolute global/user config path (null if tool has no global file) */
   global: string | null
+  /** existence probe for auto-detect, when the config path's own dir isn't a reliable signal
+   *  (e.g. we write into a subfolder the tool creates lazily). Falls back to `global`. */
+  detect?: string
   /** project-relative config path (undefined if not supported) */
   project?: string
   /** skill dirs (we append `/chitta/SKILL.md`); undefined if tool has no skills */
@@ -115,6 +120,17 @@ export const PLATFORMS: Platform[] = [
     id: "kilo", label: "Kilo Code", format: "json", key: "mcp", entry: "local",
     global: join(HOME, ".config", "kilo", "kilo.json"), project: ".kilo/kilo.json",
     skillGlobal: join(HOME, ".kilo", "skills"), skillProject: ".kilo/skills",
+  },
+  {
+    id: "continue", label: "Continue.dev", format: "yaml-file", entry: "continue",
+    global: join(HOME, ".continue", "mcpServers", "chitta.yaml"), project: ".continue/mcpServers/chitta.yaml",
+    detect: join(HOME, ".continue"),
+    note: "writes a dedicated .continue/mcpServers/chitta.yaml block (Continue auto-loads it; config.yaml untouched).",
+  },
+  {
+    id: "goose", label: "Goose", format: "yaml", key: "extensions", entry: "goose",
+    global: join(HOME, ".config", "goose", "config.yaml"),
+    note: "Block's Goose; merges into config.yaml's `extensions` (a .bak is written first — YAML comments aren't preserved).",
   },
   {
     id: "trae", label: "Trae", format: "json-array", key: "mcpServers", entry: "trae",

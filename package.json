@@ -1,6 +1,6 @@
 {
   "name": "@100xprompt/chitta",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "sqlite-vec": "^0.1.9",
@@ -26,7 +26,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./sdk": "./src/sdk.ts",
-    "./adapters/ai-tools": "./src/adapters/ai-tools.ts"
+    "./adapters/ai-tools": "./src/adapters/ai-tools.ts",
+    "./adapters/langchain": "./src/adapters/langchain.ts"
   },
   "files": [
     "src",

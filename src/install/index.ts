@@ -9,10 +9,14 @@
 //   chitta install --list                   # list supported tools
 //   chitta install --user-id alice --org-id acme   # bake identity into the config env
 //   chitta uninstall [--platform ...] [--project]   # remove the chitta entry/skill
-import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { PLATFORMS, byId, type Platform } from "./platforms"
-import { serverEntry, writeJsonConfig, writeCodexToml, printSnippet } from "./writers"
+import {
+  serverEntry, printSnippet,
+  writeJsonConfig, writeYamlConfig, writeYamlFile, writeCodexToml,
+  removeJsonConfig, removeYamlConfig, removeCodexToml,
+} from "./writers"
 import { installSkill } from "./skill"
 
 const argv = process.argv.slice(2)
@@ -75,6 +79,7 @@ function targetSkillDir(p: Platform): string | null {
 
 /** A tool counts as "present" if its config dir/file already exists on this machine. */
 function detected(p: Platform): boolean {
+  if (p.detect) return existsSync(p.detect) // explicit probe (tool home) when the config lives in a lazy subdir
   if (!p.global) return false
   return existsSync(p.global) || existsSync(dirname(p.global))
 }
@@ -102,46 +107,77 @@ function resolvePlatforms(): Platform[] {
   return found
 }
 
-function doInstall(p: Platform): string {
+// One tool's outcome. `text` is the human block printed for it; the rest feeds the summary.
+interface Report {
+  label: string
+  status: "ok" | "skip" | "fail"
+  path?: string | null
+  backup?: string | null
+  reason?: string
+  text: string
+}
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+function doInstall(p: Platform): Report {
+  // Skill install is isolated: a skills-dir failure is reported but never sinks a good config write.
   const skillDir = targetSkillDir(p)
-  const skillNote = skillDir ? `  + skill → ${installSkill(skillDir)}` : ""
+  let skillNote = ""
+  if (skillDir) {
+    try { skillNote = `\n    + skill → ${installSkill(skillDir)}` }
+    catch (e) { skillNote = `\n    ! skill install failed: ${errMsg(e)}` }
+  }
   if (p.format === "manual" || (!project && p.global === null)) {
-    return `~ ${p.label}: no stable config path — add manually (see --print).${skillNote}`
+    return { label: p.label, status: "skip", reason: "no stable config path (see --print)",
+      text: `~ ${p.label}: no stable config path — add manually (see --print).${skillNote}` }
   }
   const path = targetConfigPath(p)
-  if (!path) return `~ ${p.label}: no ${project ? "project" : "global"} config path.${skillNote}`
-  if (p.format === "toml") {
-    writeCodexToml(path, env)
-  } else {
-    writeJsonConfig(path, p.key!, serverEntry(p.entry!, env), p.format === "json-array")
+  if (!path) {
+    return { label: p.label, status: "skip", reason: `no ${project ? "project" : "global"} config path`,
+      text: `~ ${p.label}: no ${project ? "project" : "global"} config path.${skillNote}` }
   }
-  return `✓ ${p.label} → ${path}${p.note ? `\n    (${p.note})` : ""}${skillNote}`
+  let backup: string | null = null
+  if (p.format === "toml") backup = writeCodexToml(path, env)
+  else if (p.format === "yaml") backup = writeYamlConfig(path, p.key!, serverEntry(p.entry!, env), false)
+  else if (p.format === "yaml-file") backup = writeYamlFile(path, serverEntry(p.entry!, env))
+  else backup = writeJsonConfig(path, p.key!, serverEntry(p.entry!, env), p.format === "json-array")
+  const noteLine = p.note ? `\n    (${p.note})` : ""
+  const backLine = backup ? `\n    ↺ backed up prior config → ${backup}` : ""
+  return { label: p.label, status: "ok", path, backup, text: `✓ ${p.label} → ${path}${noteLine}${backLine}${skillNote}` }
 }
 
-function doUninstall(p: Platform): string {
+function doUninstall(p: Platform): Report {
   const path = targetConfigPath(p)
   const lines: string[] = []
+  let status: Report["status"] = "skip"
   if (path && existsSync(path)) {
-    if (p.format === "toml") {
-      const t = readFileSync(path, "utf8").replace(/\n*\[mcp_servers\.chitta\][\s\S]*?(?=\n\[[^.\]]|\s*$)/g, "\n")
-      writeFileSync(path, t.replace(/\n{3,}/g, "\n\n").trimStart())
+    if (p.format === "yaml-file") {
+      rmSync(path, { force: true }) // a file we fully own → delete outright
+      lines.push(`✓ removed ${path}`); status = "ok"
     } else {
-      try {
-        const cfg = JSON.parse(readFileSync(path, "utf8"))
-        const c = cfg[p.key!]
-        if (Array.isArray(c)) cfg[p.key!] = c.filter((e: any) => e?.name !== "chitta")
-        else if (c && typeof c === "object") delete c["chitta"]
-        writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n")
-      } catch { /* ignore malformed */ }
+      const removed = p.format === "toml" ? removeCodexToml(path)
+        : p.format === "yaml" ? removeYamlConfig(path, p.key!)
+        : removeJsonConfig(path, p.key!)
+      if (removed) { lines.push(`✓ removed from ${path}`); status = "ok" }
     }
-    lines.push(`✓ removed from ${path}`)
   }
   const skillDir = targetSkillDir(p)
   if (skillDir && existsSync(join(skillDir, "chitta"))) {
     rmSync(join(skillDir, "chitta"), { recursive: true, force: true })
-    lines.push(`✓ removed skill ${join(skillDir, "chitta")}`)
+    lines.push(`✓ removed skill ${join(skillDir, "chitta")}`); status = "ok"
   }
-  return `${p.label}:\n  ${lines.length ? lines.join("\n  ") : "(nothing to remove)"}`
+  return { label: p.label, status, text: `${p.label}:\n  ${lines.length ? lines.join("\n  ") : "(nothing to remove)"}` }
+}
+
+/** Per-tool ✓/~/✗ roll-up printed after all tools run. */
+function printSummary(reports: Report[], verb: string): void {
+  const n = (s: Report["status"]) => reports.filter((r) => r.status === s).length
+  console.log("─".repeat(56))
+  console.log(`Summary — ${verb}: ${n("ok")} ok · ${n("skip")} skipped · ${n("fail")} failed`)
+  for (const r of reports) {
+    const mark = r.status === "ok" ? "✓" : r.status === "skip" ? "~" : "✗"
+    const tail = r.status === "ok" ? (r.path ?? "") : (r.reason ?? "")
+    console.log(`  ${mark} ${r.label.padEnd(16)} ${tail}${r.backup ? `  [backup ${r.backup}]` : ""}`)
+  }
 }
 
 // ── main ───────────────────────────────────────────────────────────────────────
@@ -174,10 +210,29 @@ if (has("print")) {
 
 const platforms = resolvePlatforms()
 const run = action === "uninstall" ? doUninstall : doInstall
-console.log(`Chitta ${action} — ${project ? "project" : "global"} scope${project ? ` (${projectDir})` : ""}\n`)
-for (const p of platforms) console.log(run(p) + "\n")
-if (action === "install") {
-  console.log("Done. Restart the tool (or reload its MCP config) to pick up Chitta's tools:")
+const verb = action === "uninstall" ? "uninstall" : "install"
+console.log(`Chitta ${verb} — ${project ? "project" : "global"} scope${project ? ` (${projectDir})` : ""}\n`)
+const reports: Report[] = []
+for (const p of platforms) {
+  let r: Report
+  try {
+    r = run(p)
+  } catch (e) {
+    // partial-failure isolation: one tool's error (perms, malformed config, …) never aborts the rest
+    const reason = errMsg(e)
+    r = { label: p.label, status: "fail", reason, text: `✗ ${p.label}: ${reason}` }
+  }
+  console.log(r.text + "\n")
+  reports.push(r)
+}
+printSummary(reports, verb)
+const failed = reports.filter((r) => r.status === "fail").length
+if (action === "install" && reports.some((r) => r.status === "ok")) {
+  console.log("\nDone. Restart the tool (or reload its MCP config) to pick up Chitta's tools:")
   console.log("  get_context · context_ingest · context_forget · context_profile · context_graph · context_relate")
   console.log("Tip: `chitta doctor` shows your config + health.")
+}
+if (failed) {
+  console.log(`\n${failed} tool(s) failed — see the ✗ line(s) above; the rest completed.`)
+  process.exitCode = 1 // signal partial failure to scripts/CI without swallowing output
 }

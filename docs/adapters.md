@@ -170,3 +170,107 @@ const aliceTools = toolsFor("alice")
 ```
 
 See [SDK.md](./SDK.md) for the underlying `remember` / `recall` semantics (hybrid retrieval, self-correcting facts, bi-temporal history) and the multi-tenant permission model.
+
+---
+
+## LangChain
+
+LangChain's retriever and chat-memory contracts are **structural** — a retriever returns `Document[]` (`{ pageContent, metadata }`), and memory exposes `loadMemoryVariables` / `saveContext`. So Chitta plugs into a LangChain app **without depending on `langchain` / `@langchain/*`**. The adapter just produces those shapes.
+
+```ts
+import { Chitta } from "@100xprompt/chitta"
+import { chittaRetriever, chittaChatMemory } from "@100xprompt/chitta/adapters/langchain"
+
+const memory = new Chitta({ path: "./memory.db" }) // or memory.user("alice") for per-user ACL
+```
+
+| Adapter | Produces | Backed by |
+|---|---|---|
+| `chittaRetriever(memory, { limit? })` | `{ getRelevantDocuments(query), invoke(query) }` → `Array<{ pageContent, metadata: { score, recordId, recordName } }>` | `recall` |
+| `chittaChatMemory(memory, { memoryKey?, limit? })` | `{ memoryKey, memoryKeys, loadMemoryVariables(inputs?), saveContext(inputs, outputs) }` | `recall` + `remember` |
+
+> **Runnable example:** [`examples/langchain/index.ts`](../examples/langchain/index.ts) — `bun run examples/langchain/index.ts`.
+
+### `chittaRetriever` in a RAG chain
+
+`getRelevantDocuments` (legacy name) and `invoke` (the newer Runnable name) both return LangChain `Document`s. The simplest way to use it in an LCEL chain is to wrap the call in a `RunnableLambda`:
+
+```ts
+import { RunnableSequence, RunnableLambda } from "@langchain/core/runnables"
+import { ChatPromptTemplate } from "@langchain/core/prompts"
+import { StringOutputParser } from "@langchain/core/output_parsers"
+import { ChatOpenAI } from "@langchain/openai"
+import { formatDocumentsAsString } from "langchain/util/document"
+import { Chitta } from "@100xprompt/chitta"
+import { chittaRetriever } from "@100xprompt/chitta/adapters/langchain"
+
+const memory = new Chitta({ path: "./memory.db" })
+const retriever = chittaRetriever(memory, { limit: 4 })
+
+const prompt = ChatPromptTemplate.fromTemplate(
+  "Answer using only this context:\n{context}\n\nQuestion: {question}",
+)
+
+const chain = RunnableSequence.from([
+  {
+    context: new RunnableLambda({
+      func: async (q: string) => formatDocumentsAsString(await retriever.getRelevantDocuments(q)),
+    }),
+    question: new RunnableLambda({ func: (q: string) => q }),
+  },
+  prompt,
+  new ChatOpenAI({ model: "gpt-4o" }),
+  new StringOutputParser(),
+])
+
+const answer = await chain.invoke("When do we launch?")
+```
+
+Prefer a **first-class, pipeable retriever** (usable anywhere LangChain expects a `BaseRetriever`)? Wrap the adapter in a ~5-line subclass — Chitta's docs are structurally assignable to `@langchain/core`'s `Document`:
+
+```ts
+import { BaseRetriever } from "@langchain/core/retrievers"
+import type { Document } from "@langchain/core/documents"
+import { Chitta } from "@100xprompt/chitta"
+import { chittaRetriever } from "@100xprompt/chitta/adapters/langchain"
+
+class ChittaLcRetriever extends BaseRetriever {
+  lc_namespace = ["chitta", "retrievers"]
+  private inner: ReturnType<typeof chittaRetriever>
+  constructor(memory: Chitta) {
+    super()
+    this.inner = chittaRetriever(memory, { limit: 4 })
+  }
+  async _getRelevantDocuments(query: string): Promise<Document[]> {
+    return this.inner.getRelevantDocuments(query)
+  }
+}
+
+const retriever = new ChittaLcRetriever(new Chitta({ path: "./memory.db" }))
+const docs = await retriever.invoke("When do we launch?") // BaseRetriever gives you .invoke + .pipe
+```
+
+### `chittaChatMemory` in a conversation chain
+
+`chittaChatMemory` implements LangChain's classic `BaseMemory`. On each turn the chain calls `loadMemoryVariables(inputs)` (Chitta recalls memories relevant to `inputs.input` and returns them as a string block under `memoryKey`) then `saveContext(inputs, outputs)` (Chitta `remember`s the exchange). The "history" is Chitta's **ranked, relevant recall** — not a raw transcript — so it stays useful as the conversation grows.
+
+```ts
+import { ConversationChain } from "langchain/chains"
+import { ChatOpenAI } from "@langchain/openai"
+import { Chitta } from "@100xprompt/chitta"
+import { chittaChatMemory } from "@100xprompt/chitta/adapters/langchain"
+
+const memory = new Chitta({ path: "./memory.db" })
+
+const chain = new ConversationChain({
+  llm: new ChatOpenAI({ model: "gpt-4o" }),
+  memory: chittaChatMemory(memory, { memoryKey: "history" }), // matches ConversationChain's default {history} slot
+})
+
+await chain.invoke({ input: "My launch is March 3rd." })    // saveContext stores the turn
+const res = await chain.invoke({ input: "When is my launch?" }) // loadMemoryVariables recalls it
+```
+
+`memoryKey` must match the prompt's memory variable (`ConversationChain`'s default prompt uses `{history}`). For a per-user chat, pass `memory.user(userId)` so recall is ACL-scoped to that principal.
+
+> LCEL's newer, message-oriented `RunnableWithMessageHistory` stores a verbatim transcript; `chittaChatMemory` targets the classic variable-block `BaseMemory` contract, injecting *relevant* memory instead. Use `chittaRetriever` if you'd rather fetch memory as documents inside an LCEL graph.

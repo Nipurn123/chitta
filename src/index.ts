@@ -8,6 +8,8 @@ export type { ChittaOptions, RememberOptions, Recalled, Entity, Relation } from 
 export { ChittaError, ConfigError } from "./errors"
 // Framework tool adapter (Vercel AI SDK / OpenAI / Anthropic) also at "@100xprompt/chitta/adapters/ai-tools".
 export { chittaTools } from "./adapters/ai-tools"
+// LangChain adapter (retriever + chat memory) also at "@100xprompt/chitta/adapters/langchain".
+export { chittaRetriever, chittaChatMemory } from "./adapters/langchain"
 
 export * from "./permission"
 export * from "./types"

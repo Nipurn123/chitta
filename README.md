@@ -134,8 +134,9 @@ runs great with the built-in fast hashing embedder):
   (the default `auto` already uses them when present, else falls back to hashing).
 - Encryption at rest: `bun add libsql` then set `CONTEXT_DB_KEY=<key>` (transparent AES whole-file).
 
-**Supported tools (15):** Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Windsurf,
-Zed, Cline, Roo Code, Codex CLI, Gemini CLI, opencode, Kiro, Amp, Factory Droid, Kilo Code.
+**Supported tools (17):** Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Windsurf,
+Zed, Cline, Roo Code, Codex CLI, Gemini CLI, opencode, Continue.dev, Goose, Kiro, Amp,
+Factory Droid, Kilo Code.
 Skill (not just MCP) is installed for the ones that support it (Claude Code, Cursor, Gemini,
 opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and paste.
 
@@ -273,6 +274,61 @@ The brute-force path is engineered for low latency: embeddings are stored as com
 Measured ~1.4 ms @1k and ~15 ms @10k vectors; the ANN paths stay sub-ms well beyond that.
 Read pragmas (256 MB page cache, mmap on plaintext, WAL) keep steady-state queries hot.
 
+## Benchmarks & performance
+
+All numbers **measured this release** on a dev laptop (hash embedder unless noted; ratios, not SLAs). Full detail + caveats in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+### Retrieval quality — at **zero LLM tokens**
+
+| Benchmark | Metric | Chitta | Notes |
+|---|---|--:|---|
+| **LongMemEval** | recall@10 (Tier-A) | **0.782** | session-level evidence |
+| **LoCoMo** | recall@10 (Tier-A) | **0.531** | 1,986 Q · `bge-small` · rerank off |
+| **LoCoMo** | nDCG@10 / MRR | 0.339 / 0.300 | temporal **0.66** · single-hop **0.60** |
+| **LoCoMo** | context reduction | **153×** | 169 vs 25,864 tokens/question |
+
+Retrieval is fully **LLM-free** and hands the reader **169 tokens instead of 25,864** (153× less) at **17.8 ms/question**. Competitors post 90%+ on *end-to-end QA* (an LLM reads the memory and answers) — e.g. Mem0 at **~6,900 tokens/query**; Chitta spends **0**. Compare accuracy *at token cost*.
+
+### Graph retrieval — **O(1) in graph size**
+
+```
+query latency @100K-record graph        (lower is better)
+bounded   O(1)   ▏ 0.05 ms
+unbounded O(N)   ████████████████████████████████████████ 2.0 ms  →  39× slower, and widening
+```
+Flat ~0.05 ms from 50K→100K; recall held (+0.6% vs unbounded). `CONTEXT_GRAPH_BOUNDED` (default on).
+
+### Ingest — **O(N²) → ~O(N log N)**
+
+```
+per-record ingest @8K records            (lower is better)
+before  O(N²)     ████████████████████████████████████████ 25.7 ms   (20K used to time out)
+now   ~O(N log N) ██ 1.14 ms                                          ≈ 22× faster
+```
+
+| records | before (O(N²)) | now (~O(N log N)) |
+|--:|--:|--:|
+| 1K | 2.25 ms/rec | 0.60 ms/rec |
+| 8K | 25.7 ms/rec | 1.14 ms/rec |
+| 16K | *(timed out)* | 1.72 ms/rec |
+
+### Dense vector — sub-linear both ways
+
+```
+dense ANN query @100K vectors            (lower is better)
+vec0 (default)    ████████████████████████████████████████ 51 ms
+DiskANN (opt-in)  ██████ ~8 ms                                        ≈ 6× faster, flat
+```
+
+| corpus | vec0 (default) | DiskANN (`CONTEXT_DISKANN=1`) |
+|--:|--:|--:|
+| 3K | 1.6 ms | 8.4 ms |
+| 18K | 9.7 ms | 8.1 ms |
+| 100K | 51 ms | ~8 ms |
+
+- **Filtered-ANN** (default, scoped users): dense search is **O(accessible), not O(corpus)** — leak-proof by construction, exact (**Δrecall = 0**), ~4.6× faster for a scoped user at a 12K corpus.
+- **DiskANN** is opt-in for *large, read-heavy* corpora: sub-linear query (0.98 recall vs exact), but ~80× slower ingest and an ~8 ms floor — vec0 wins below ~15–18K.
+
 ## Status
 
 Implemented: ACL graph, vector store, retrieval + leak guard, **knowledge-graph extraction**, MCP server
@@ -288,9 +344,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module internals and the se
 - [ARCHITECTURE.md](ARCHITECTURE.md) - pipeline, module map, security invariant, extending it
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - measure memory quality (Tier A retrieval + Tier B end-to-end QA; LongMemEval/LoCoMo)
 - [docs/SDK.md](docs/SDK.md) - the embeddable SDK: quickstart, multi-tenant ACL, typed graph, self-correction, temporal
+- [docs/API.md](docs/API.md) - complete SDK API reference: Chitta / ChittaUser, every option + return type, errors, onEvent, chittaTools
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) - production deployment: persistence, encryption at rest, scaling flags, multi-tenant ACL, checklist
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - why it scales: measured graph / ingest / filtered-ANN / DiskANN numbers, with honest caveats
-- [docs/adapters.md](docs/adapters.md) - use Chitta as tools in the Vercel AI SDK / OpenAI / Anthropic agent loops
+- [docs/adapters.md](docs/adapters.md) - use Chitta as tools in the Vercel AI SDK / OpenAI / Anthropic agent loops, or as a LangChain retriever / memory
+- [docs/RELEASING.md](docs/RELEASING.md) - how to cut a release: version bump, CHANGELOG, git tag + GitHub Release → bun publish
 - [examples/](examples/) - runnable demos
 - [CONTRIBUTING.md](CONTRIBUTING.md) - dev setup and workflow
 - [SECURITY.md](SECURITY.md) - security model and how to report issues
