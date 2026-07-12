@@ -1,0 +1,54 @@
+// Context layer - the permission-aware retrieval moat, ported natively to TS.
+// See ./README.md for the port provenance and what still plugs in behind the seams.
+
+// ── The Chitta SDK (the primary programmatic API): an ergonomic, in-process, permission-aware
+//    knowledge-graph + vector memory. `import { Chitta } from "@100xprompt/chitta"`. ──
+export { Chitta, ChittaUser } from "./sdk"
+export type { ChittaOptions, RememberOptions, Recalled, Entity, Relation } from "./sdk"
+export { ChittaError, ConfigError } from "./errors"
+// Framework tool adapter (Vercel AI SDK / OpenAI / Anthropic) also at "@100xprompt/chitta/adapters/ai-tools".
+export { chittaTools } from "./adapters/ai-tools"
+// LangChain adapter (retriever + chat memory) also at "@100xprompt/chitta/adapters/langchain".
+export { chittaRetriever, chittaChatMemory } from "./adapters/langchain"
+
+export * from "./permission"
+export * from "./types"
+export * from "./provider"
+export { ArangoGraphProvider } from "./arango-graph-provider"
+export { RetrievalService, type RetrievalDeps } from "./retrieval"
+export { ArangoHttpClient, type ArangoConfig } from "./arango-client"
+export { QdrantVectorService, type QdrantConfig } from "./qdrant-vector"
+export { HttpEmbeddingProvider, type EmbeddingConfig } from "./embeddings"
+export { buildContextService, type ContextConfig, type ContextService, type ContextLog } from "./service"
+
+import { ArangoGraphProvider } from "./arango-graph-provider"
+import { RetrievalService } from "./retrieval"
+import type { ArangoClient, EmbeddingProvider, VectorDBService } from "./provider"
+
+/** Build a ready retrieval service from the three backend seams. */
+export function createContext(opts: {
+  arango: ArangoClient
+  vector: VectorDBService
+  embeddings: EmbeddingProvider
+  collectionName: string
+  log?: RetrievalServiceLog
+}) {
+  const graph = new ArangoGraphProvider(opts.arango, opts.log)
+  const retrieval = new RetrievalService({
+    graph,
+    vector: opts.vector,
+    embeddings: opts.embeddings,
+    collectionName: opts.collectionName,
+    log: opts.log,
+  })
+  return { graph, retrieval }
+}
+
+type RetrievalServiceLog = {
+  info: (m: string) => void
+  debug: (m: string) => void
+  error: (m: string, ...a: unknown[]) => void
+}
+
+// Re-export the backend seam types for callers wiring adapters.
+export type { ArangoClient, EmbeddingProvider, VectorDBService } from "./provider"

@@ -1,0 +1,5 @@
+# Force the deterministic hashing embedder during tests so the suite never downloads a
+# model and stays fast + reproducible. Production (bunx / bun start) has no preload, so it
+# uses the real embeddings default (CONTEXT_EMBEDDINGS=auto).
+[test]
+preload = ["./test/setup.ts"]

@@ -1,0 +1,40 @@
+name: Publish
+
+# Tag-driven: only runs when a GitHub Release is published, never on push.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Gate the publish on a green test run.
+      - name: Test
+        run: bun test
+
+      # Write the npm token into ~/.npmrc so `bun publish` can authenticate.
+      # The shell expands ${NPM_TOKEN} at write time, so the real token value
+      # lands in the file (no reliance on bun expanding env vars inside .npmrc).
+      - name: Configure npm registry auth
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        run: bun publish --access public

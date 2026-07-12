@@ -1,0 +1,33 @@
+# Keep dependencies and GitHub Actions up to date automatically.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  - package-ecosystem: "npm" # also covers Bun's package.json / lockfile
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # Blocked upstream: web-tree-sitter >=0.25 refuses the grammar wasms shipped by
+      # tree-sitter-wasms (<=0.1.13, legacy dylink section). The extractor already speaks
+      # both APIs (src/embedded/extractors/code.ts), so once a compatible grammar bundle
+      # ships, upgrading is a one-line bump - until then this PR would always fail tests.
+      - dependency-name: "web-tree-sitter"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # TypeScript majors (7.x native compiler) are adopted deliberately, not auto-bumped.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
