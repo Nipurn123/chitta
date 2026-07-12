@@ -287,6 +287,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module internals and the se
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - pipeline, module map, security invariant, extending it
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md) - measure memory quality (Tier A retrieval + Tier B end-to-end QA; LongMemEval/LoCoMo)
+- [docs/SDK.md](docs/SDK.md) - the embeddable SDK: quickstart, multi-tenant ACL, typed graph, self-correction, temporal
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) - production deployment: persistence, encryption at rest, scaling flags, multi-tenant ACL, checklist
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - why it scales: measured graph / ingest / filtered-ANN / DiskANN numbers, with honest caveats
+- [docs/adapters.md](docs/adapters.md) - use Chitta as tools in the Vercel AI SDK / OpenAI / Anthropic agent loops
 - [examples/](examples/) - runnable demos
 - [CONTRIBUTING.md](CONTRIBUTING.md) - dev setup and workflow
 - [SECURITY.md](SECURITY.md) - security model and how to report issues

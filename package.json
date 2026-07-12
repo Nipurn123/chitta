@@ -25,7 +25,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./sdk": "./src/sdk.ts"
+    "./sdk": "./src/sdk.ts",
+    "./adapters/ai-tools": "./src/adapters/ai-tools.ts"
   },
   "files": [
     "src",
@@ -57,6 +58,7 @@
     "start": "bun run src/bin.ts",
     "test": "bun test test/",
     "typecheck": "tsc --noEmit",
+    "ci": "bun run typecheck && bun run test",
     "build": "bun build src/bin.ts --compile --outfile dist/chitta",
     "install:tools": "bun run src/bin.ts install",
     "cli": "bun run src/embedded/cli.ts"

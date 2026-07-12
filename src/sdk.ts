@@ -11,6 +11,7 @@ import { AutoEmbeddings, TransformersEmbeddings } from "./embedded/transformers-
 import { CrossEncoderReranker } from "./embedded/reranker"
 import type { Role } from "./embedded/authorizer"
 import type { EmbeddingProvider } from "./provider"
+import { ConfigError } from "./errors"
 
 export interface ChittaOptions {
   /** SQLite file path. ":memory:" (default) is ephemeral; a real path persists across runs. */
@@ -25,6 +26,10 @@ export interface ChittaOptions {
   rerank?: boolean
   /** Default organization id for the single-user API (multi-tenant uses `.user(id, {org})`). */
   org?: string
+  /** Observability hook, fired after `remember` / `recall` / `facts` with the op name, elapsed
+   *  milliseconds, and (where meaningful) the result `count`. Wrapped in try/catch — a throwing
+   *  handler never breaks the call. Zero overhead when unset. */
+  onEvent?: (e: { op: string; ms: number; count?: number }) => void
 }
 
 export interface Entity {
@@ -65,6 +70,22 @@ export interface Recalled {
 
 const newId = (): string => `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
+/** The named embedder presets accepted as a string (anything else must be an EmbeddingProvider). */
+const EMBED_MODES = ["auto", "hash", "transformers"] as const
+
+/** Fail fast on a malformed `ChittaOptions` before we build the engine — with a message that
+ *  tells the caller exactly what's valid. */
+function validateOptions(o: ChittaOptions): void {
+  const e = o.embeddings
+  if (typeof e === "string" && !(EMBED_MODES as readonly string[]).includes(e)) {
+    const modes = EMBED_MODES.map((m) => `"${m}"`).join(", ")
+    throw new ConfigError(`invalid embeddings "${e}" — expected one of ${modes}, or an EmbeddingProvider instance`)
+  }
+  if (o.path !== undefined && (typeof o.path !== "string" || o.path.trim().length === 0)) {
+    throw new ConfigError(`invalid path — expected a non-empty string (or omit for an in-memory store), got ${JSON.stringify(o.path)}`)
+  }
+}
+
 function pickEmbeddings(o: ChittaOptions): EmbeddingProvider {
   const e = o.embeddings ?? "auto"
   if (typeof e !== "string") return e
@@ -81,11 +102,25 @@ export class ChittaUser {
     readonly ctx: EmbeddedContext,
     readonly userId: string,
     readonly orgId: string,
+    /** Observability hook, threaded from the parent `Chitta` (see `ChittaOptions.onEvent`). */
+    private readonly onEvent?: ChittaOptions["onEvent"],
   ) {}
+
+  /** Fire the observability hook. Guarded (unset ⇒ zero work) and wrapped so a throwing
+   *  handler can never break the memory operation it observes. */
+  private emit(op: string, startedAt: number, count?: number): void {
+    if (!this.onEvent) return
+    try {
+      this.onEvent({ op, ms: performance.now() - startedAt, count })
+    } catch {
+      // a bad observer must never break a call — swallow it
+    }
+  }
 
   /** Store something durable. Returns its record id — pass that back as `id` to UPDATE it later
    *  (functional facts self-correct: "works at Google" → "works at Meta" supersedes). */
   async remember(text: string, opts: RememberOptions = {}): Promise<{ id: string }> {
+    const t0 = this.onEvent ? performance.now() : 0
     const id = opts.id ?? newId()
     await this.ctx.authorizedIngest(this.userId, {
       recordId: id,
@@ -99,23 +134,40 @@ export class ChittaUser {
       episodes: opts.episodes,
       procedures: opts.procedures,
     })
+    this.emit("remember", t0)
     return { id }
+  }
+
+  /** Store many memories in one call — each item is a full `remember` (its own record + typed
+   *  graph). Returns the ids in input order. */
+  async rememberMany(items: Array<{ text: string } & RememberOptions>): Promise<{ id: string }[]> {
+    const out: { id: string }[] = []
+    for (const { text, ...opts } of items) {
+      out.push(await this.remember(text, opts))
+    }
+    return out
   }
 
   /** Retrieve ranked, cited snippets relevant to a query — hybrid (vector + keyword + graph),
    *  reranked, and ACL-filtered to this user. */
   async recall(query: string, opts: { limit?: number } = {}): Promise<Recalled[]> {
+    const t0 = this.onEvent ? performance.now() : 0
     const res = await this.ctx.searchWithGraph(query, this.userId, this.orgId, undefined, opts.limit)
-    return res.searchResults.map((r) => {
+    const out = res.searchResults.map((r) => {
       const m = r.metadata as { recordId?: string; recordName?: string }
       return { text: r.content, score: r.score, recordId: m.recordId, recordName: m.recordName }
     })
+    this.emit("recall", t0, out.length)
+    return out
   }
 
   /** The current atomic FACTS relevant to a query (self-correcting: superseded / contradicted
    *  facts are excluded — you get the current truth). */
-  facts(query: string, opts: { limit?: number } = {}) {
-    return this.ctx.recallMemories(query, this.userId, this.orgId, opts.limit)
+  async facts(query: string, opts: { limit?: number } = {}) {
+    const t0 = this.onEvent ? performance.now() : 0
+    const res = await this.ctx.recallMemories(query, this.userId, this.orgId, opts.limit)
+    this.emit("facts", t0, res.length)
+    return res
   }
 
   /** Everything relevant: current facts + episodic events + procedural how-tos. */
@@ -167,11 +219,14 @@ export class Chitta {
   /** The full low-level engine (escape hatch for advanced use). */
   readonly ctx: EmbeddedContext
   private readonly org: string
+  private readonly onEvent?: ChittaOptions["onEvent"]
   private readonly provisioned = new Set<string>()
   private meCache?: ChittaUser
 
   constructor(opts: ChittaOptions = {}) {
+    validateOptions(opts)
     this.org = opts.org ?? "default-org"
+    this.onEvent = opts.onEvent
     this.ctx = buildEmbeddedContext({
       path: opts.path ?? ":memory:",
       embeddings: pickEmbeddings(opts),
@@ -192,7 +247,7 @@ export class Chitta {
       }
       this.provisioned.add(key)
     }
-    return new ChittaUser(this.ctx, userId, orgId)
+    return new ChittaUser(this.ctx, userId, orgId, this.onEvent)
   }
 
   // ── single-user convenience: a default admin "me" ──
@@ -202,6 +257,10 @@ export class Chitta {
   /** Store something durable (single-user). */
   remember(text: string, opts?: RememberOptions) {
     return this.me().remember(text, opts)
+  }
+  /** Store many memories at once (single-user). */
+  rememberMany(items: Array<{ text: string } & RememberOptions>) {
+    return this.me().rememberMany(items)
   }
   /** Retrieve ranked, cited snippets (single-user). */
   recall(query: string, opts?: { limit?: number }) {

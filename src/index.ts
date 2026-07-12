@@ -5,6 +5,9 @@
 //    knowledge-graph + vector memory. `import { Chitta } from "@100xprompt/chitta"`. ──
 export { Chitta, ChittaUser } from "./sdk"
 export type { ChittaOptions, RememberOptions, Recalled, Entity, Relation } from "./sdk"
+export { ChittaError, ConfigError } from "./errors"
+// Framework tool adapter (Vercel AI SDK / OpenAI / Anthropic) also at "@100xprompt/chitta/adapters/ai-tools".
+export { chittaTools } from "./adapters/ai-tools"
 
 export * from "./permission"
 export * from "./types"
