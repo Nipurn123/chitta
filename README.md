@@ -11,7 +11,7 @@ and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per 
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-329%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-365%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -311,7 +311,7 @@ model** - the part most memory products treat as proprietary magic, here done na
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 329 tests
+bun test                          # 365 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 
