@@ -19,10 +19,26 @@ function queryEntitySeeds(query: string, store: SqliteStore, accMap: AccessibleM
     if (hit) ids.push(hit.canonicalId)
   }
   if (ids.length === 0) return []
-  const rows = store.db
-    .query(`SELECT DISTINCT src FROM edges WHERE label = 'mentions' AND dst IN (${ids.map(() => "?").join(",")})`)
-    .all(...ids) as Array<{ src: string }>
-  return rows.map((r) => r.src).filter((rid) => accMap[rid] != null) // ACL gate
+  // Bounded, hub-aware seeding: a HUB entity (mentioned by very many records) is noise, not
+  // signal - seeding all of them would flood the graph pool and cost O(N). Skip hubs, prefer
+  // specific entities, and cap the total seed set. Keeps the multi-hop entry point precise + fast.
+  const cap = Number(process.env.CONTEXT_GRAPH_SEED_CAP ?? 40)
+  const hub = Number(process.env.CONTEXT_GRAPH_SEED_HUB ?? 60)
+  const out = new Set<string>()
+  const mentions = store.db.query("SELECT src FROM edges WHERE label = 'mentions' AND dst = ?")
+  // specific entities (fewer mentions) first, so a rare, discriminating entity wins a seed slot
+  const byFreq = ids
+    .map((id) => ({ id, n: (store.db.query("SELECT count(*) c FROM edges WHERE label='mentions' AND dst=?").get(id) as { c: number }).c }))
+    .sort((a, b) => a.n - b.n)
+  for (const { id, n } of byFreq) {
+    if (n > hub) continue // hub → skip
+    for (const r of mentions.all(id) as Array<{ src: string }>) {
+      if (accMap[r.src] == null) continue // ACL gate
+      out.add(r.src)
+      if (out.size >= cap) return [...out]
+    }
+  }
+  return [...out]
 }
 
 export async function graphStage(

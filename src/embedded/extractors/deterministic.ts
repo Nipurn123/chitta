@@ -49,6 +49,8 @@ function candidates(line: string): ExtractedEntity[] {
 // (specific verbs + capitalized entities) so noise stays low; unmatched pairs still fall back
 // to co-occurrence relates_to. FUNCTIONAL predicates (works_at, lives_in…) are single-valued,
 // so a later value SUPERSEDES the old one - the same bi-temporal behavior the LLM path gets.
+// A capitalized entity phrase. "." / "&" are allowed INTERNALLY (J.P. Morgan, AT&T); any
+// that leak onto the ends are trimmed at capture time so "Meta." → "Meta".
 const CAP = "([A-Z][A-Za-z0-9.&]*(?:[ -][A-Z][A-Za-z0-9.&]*)*)"
 const REL_RULES: Array<{ verb: string; pred: string }> = [
   { verb: "works? (?:at|for)|worked (?:at|for)|is employed (?:at|by)|now works at|joined", pred: "works_at" },
@@ -60,28 +62,45 @@ const REL_RULES: Array<{ verb: string; pred: string }> = [
   { verb: "is married to|married to|married", pred: "married_to" },
   { verb: "was born in|born in", pred: "born_in" },
   { verb: "reports? to|reporting to", pred: "reports_to" },
+  { verb: "manages|is (?:the )?manager of", pred: "manages" },
+  { verb: "created|built|developed|designed|invented", pred: "created" },
+  { verb: "wrote|authored", pred: "authored" },
+  { verb: "invested in|funded|backs|backed", pred: "invested_in" },
+  { verb: "is (?:a )?member of|member of|belongs to|is part of|part of", pred: "member_of" },
+  { verb: "is headquartered in|headquartered in", pred: "headquartered_in" },
+  { verb: "owns|owned by", pred: "owns" },
+  { verb: "studied at|graduated from|attended", pred: "studied_at" },
   { verb: "visited|went to|traveled to|flew to", pred: "visited" },
   { verb: "met with|met", pred: "met" },
 ]
 const REL_REGEX = REL_RULES.map((r) => ({ re: new RegExp(CAP + "\\s+(?:" + r.verb + ")\\s+" + CAP, "g"), pred: r.pred }))
 
+// Trim over-captured trailing "." / "&" / space so entity labels are clean.
+const trimEnt = (s: string): string => s.trim().replace(/[.&\s]+$/, "").trim()
+
 // Scan the whole text for typed subject-predicate-object patterns; register any endpoint
-// that isn't already an entity, and return the typed relations.
+// that isn't already an entity, and return the typed relations. HARDENED: trims over-capture,
+// skips degenerate endpoints, and caps per-doc to keep a pathological input bounded.
 function extractTypedRelations(text: string, entities: Map<string, ExtractedEntity>): ExtractedRelation[] {
   const out: ExtractedRelation[] = []
   const seen = new Set<string>()
+  const MAX = 200 // bound cost on a pathological doc
   for (const { re, pred } of REL_REGEX) {
     re.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = re.exec(text)) !== null) {
-      const a = slug(m[1])
-      const b = slug(m[2])
+      if (out.length >= MAX) return out
+      const la = trimEnt(m[1])
+      const lb = trimEnt(m[2])
+      if (la.length < 2 || lb.length < 2) continue
+      const a = slug(la)
+      const b = slug(lb)
       if (!a || !b || a === b) continue
       const key = `${a}|${pred}|${b}`
       if (seen.has(key)) continue
       seen.add(key)
-      if (!entities.has(a)) entities.set(a, { id: a, label: m[1].trim(), type: "ENTITY" })
-      if (!entities.has(b)) entities.set(b, { id: b, label: m[2].trim(), type: "ENTITY" })
+      if (!entities.has(a)) entities.set(a, { id: a, label: la, type: "ENTITY" })
+      if (!entities.has(b)) entities.set(b, { id: b, label: lb, type: "ENTITY" })
       out.push({ from: a, to: b, type: pred, confidence: 0.6 }) // INFERRED tier (pattern, not LLM)
     }
   }

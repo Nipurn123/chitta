@@ -17,6 +17,18 @@ describe("deterministic typed extraction", () => {
     expect(preds.has("acquired")).toBe(true)
   })
 
+  test("hardening: negation is not a false positive, punctuation trimmed, new predicates covered", () => {
+    // "does not work at" - the verb isn't adjacent to the subject, so no false works_at edge
+    expect(extractKnowledge("Sarah Chen does not work at Meta.").relations.some((r) => r.type === "works_at")).toBe(false)
+    // over-captured trailing "." is trimmed from the entity label
+    const meta = extractKnowledge("Sarah Chen works at Meta.").entities.find((e) => e.id === "meta")
+    expect(meta?.label).toBe("Meta")
+    // expanded predicate coverage (richer typed graph)
+    expect(extractKnowledge("Bob Smith manages Sales Team").relations.some((r) => r.type === "manages")).toBe(true)
+    expect(extractKnowledge("Alice authored Deep Memory").relations.some((r) => r.type === "authored")).toBe(true)
+    expect(extractKnowledge("Acme is headquartered in Berlin").relations.some((r) => r.type === "headquartered_in")).toBe(true)
+  })
+
   test("deterministic ingest builds typed edges + recallable memories (no LLM, no tokens)", async () => {
     const ctx = buildEmbeddedContext({ path: ":memory:" }) // hash embedder (test preload) - fully offline
     ctx.ingestor.registerUser("u", "o", "e", "admin")
