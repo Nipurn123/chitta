@@ -13,7 +13,7 @@
 // behavior. The public surface of SqliteStore is preserved exactly.
 
 import { Database } from "bun:sqlite"
-import { openDatabase, isEncrypted } from "./store/db"
+import { openDatabase, useLibsql } from "./store/db"
 import { migrate, tryEnableExtensions, tryLoadVec } from "./store/schema"
 import * as graph from "./store/nodes-edges"
 import * as fts from "./store/fts"
@@ -48,9 +48,11 @@ export class SqliteStore {
   }
 
   constructor(path = ":memory:") {
-    const encrypted = isEncrypted()
+    // "native" = a libSQL handle (for at-rest encryption AND/OR native DiskANN ANN). On this
+    // handle the store uses the built-in vector index, not the sqlite-vec extension.
+    const native = useLibsql()
     tryEnableExtensions()
-    this.db = openDatabase(path) // bun:sqlite by default; encrypted libSQL if CONTEXT_DB_KEY set
+    this.db = openDatabase(path) // bun:sqlite by default; libSQL if CONTEXT_DB_KEY or CONTEXT_DISKANN
     // Read-latency pragmas (set once, before migrate). A large page cache is the main
     // lever for both paths - and the ONLY one for the encrypted driver, where decrypted
     // pages are then served from cache (decrypt paid once per page). mmap is a no-op under
@@ -61,7 +63,7 @@ export class SqliteStore {
       "PRAGMA synchronous = NORMAL;",
       "PRAGMA cache_size = -262144;", // 256 MB page cache (negative = KiB)
       "PRAGMA temp_store = MEMORY;",
-      ...(encrypted ? [] : ["PRAGMA mmap_size = 1073741824;"]), // 1 GB, plaintext only
+      ...(native ? [] : ["PRAGMA mmap_size = 1073741824;"]), // 1 GB, bun:sqlite only
     ]
     for (const p of pragmas) {
       try {
@@ -75,9 +77,9 @@ export class SqliteStore {
     // unimplemented and panics across the native boundary), so encrypted mode uses the
     // built-in brute-force cosine path instead of the ANN index — correctness preserved,
     // ANN speedup traded for encryption. FTS5 is built in and works either way.
-    this.vecEnabled = encrypted ? false : tryLoadVec(this.db)
+    this.vecEnabled = native ? false : tryLoadVec(this.db)
     this.ftsEnabled = fts.tryEnableFts(this.db)
-    this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, encrypted)
+    this.chunks = new ChunkRepo(this.db, this.vecEnabled, this.ftsEnabled, native)
     this.memories = new MemoryRepo(this.db)
     this.audit = new AuditRepo(this.db)
     this.entities = new EntityAliasRepo(this.db)

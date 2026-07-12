@@ -16,22 +16,32 @@ export function isEncrypted(): boolean {
   return !!dbKey()
 }
 
+/** True when we open with the libSQL driver: for at-rest encryption (CONTEXT_DB_KEY), OR to get
+ *  the native DiskANN vector index in PLAINTEXT (CONTEXT_DISKANN=1) - sub-linear ANN without
+ *  encryption. Either way the handle is libSQL, so the store uses the native vector path (not
+ *  the sqlite-vec extension, which libSQL can't load). Default (neither set) = bun:sqlite. */
+export function useLibsql(): boolean {
+  return isEncrypted() || /^(1|true|on)$/i.test(process.env.CONTEXT_DISKANN ?? "")
+}
+
 /** Open the store database. Returns a bun:sqlite-compatible handle either way. */
 export function openDatabase(path: string): Database {
   const key = dbKey()
-  if (!key) return new Database(path) // default, unchanged
+  if (!useLibsql()) return new Database(path) // default bun:sqlite, unchanged
 
   let mod: any
   try {
     mod = createRequire(import.meta.url)("libsql")
   } catch {
     throw new Error(
-      "CONTEXT_DB_KEY is set (encrypted mode) but the optional `libsql` package is not " +
-        "installed. Run `bun add libsql`, or unset CONTEXT_DB_KEY to use the default unencrypted store.",
+      "libSQL mode requested (CONTEXT_DB_KEY for encryption, or CONTEXT_DISKANN=1 for native ANN) " +
+        "but the optional `libsql` package is not installed. Run `bun add libsql`, or unset both to " +
+        "use the default bun:sqlite store.",
     )
   }
   const Ctor = mod?.default ?? mod
-  const raw = new Ctor(path, { encryptionKey: key })
+  // Encrypted iff a key is present; otherwise a PLAINTEXT libSQL db that still has native DiskANN.
+  const raw = key ? new Ctor(path, { encryptionKey: key }) : new Ctor(path)
   // Minimal bun:sqlite-shaped facade. The store only ever calls .query(sql).{get,all,run},
   // .exec(sql), .close(), and (via sqlite-vec) .loadExtension(). libSQL's prepared
   // statements are better-sqlite3-style (.all/.get/.run with positional args + run() ->

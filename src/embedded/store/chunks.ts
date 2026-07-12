@@ -33,11 +33,12 @@ export class ChunkRepo {
     private readonly db: Database,
     private readonly vecEnabled: boolean,
     private readonly ftsEnabled: boolean,
-    // libSQL (encrypted mode) panics on BOUND-param vec0 inserts, so on that driver we
-    // build a validated literal insert instead (numbers only → no injection surface).
-    private readonly encrypted = false,
+    // `native` = a libSQL handle (encryption AND/OR plaintext DiskANN). libSQL has a built-in
+    // vector index but panics on BOUND-param vec0 inserts, so on it we use the native index and
+    // validated literal inserts (numbers only → no injection surface).
+    private readonly native = false,
   ) {
-    this.nativeOk = encrypted // only the libSQL/encrypted driver has native vector
+    this.nativeOk = native // only the libSQL driver has the native (DiskANN) vector index
   }
 
   // The vec0 ANN table is created lazily once we know the embedding dimension.
@@ -59,7 +60,7 @@ export class ChunkRepo {
   /** Whether an ANN index is serving queries (vec0 for plaintext, native DiskANN for
    *  encrypted). When false, retrieval uses the (BLOB + dot-product) brute-force path. */
   get annEnabled(): boolean {
-    return this.vecEnabled || (this.encrypted && this.nativeOk)
+    return this.vecEnabled || (this.native && this.nativeOk)
   }
 
   addChunk(pointId: string, virtualRecordId: string, orgId: string, content: string, embedding: number[]): void {
@@ -72,7 +73,7 @@ export class ChunkRepo {
     const rowid = Number(res.lastInsertRowid)
     // Encrypted mode: maintain the libSQL NATIVE vector index (DiskANN) for ANN under
     // encryption. Any failure (older libSQL, dim mismatch) flips to brute-force fallback.
-    if (this.encrypted && this.nativeOk) {
+    if (this.native && this.nativeOk) {
       try {
         this.ensureNative(embedding.length)
         const rid = Math.trunc(rowid)
@@ -89,7 +90,7 @@ export class ChunkRepo {
       // detects the dim change and reindexes the whole DB to the current embedder.
       try {
         this.ensureVec(embedding.length)
-        if (this.encrypted) {
+        if (this.native) {
           // libSQL path: validated literal SQL (rowid is our integer; embedding is a
           // float array we produced — every element checked finite → safe to inline).
           const rid = Math.trunc(rowid)
@@ -115,7 +116,7 @@ export class ChunkRepo {
   knnSearch(queryVec: number[], k: number): Array<{ rowid: number; distance: number }> {
     // Encrypted: libSQL native DiskANN via vector_top_k (no extension). vector_top_k returns
     // rowids; we join back to get the cosine distance the caller scores with.
-    if (this.encrypted && this.nativeOk) {
+    if (this.native && this.nativeOk) {
       try {
         const json = JSON.stringify(queryVec)
         return this.db
@@ -142,7 +143,7 @@ export class ChunkRepo {
 
   /** Drop the ANN index (e.g. before reindexing with a different embedder/dim). */
   resetVec(): void {
-    if (this.encrypted) {
+    if (this.native) {
       try {
         this.db.exec("DROP INDEX IF EXISTS vec_native_idx")
         this.db.exec("DROP TABLE IF EXISTS vec_native")
@@ -150,7 +151,7 @@ export class ChunkRepo {
         /* ignore */
       }
       this.nativeDim = 0
-      this.nativeOk = this.encrypted
+      this.nativeOk = this.native
     }
     if (!this.vecEnabled) return
     this.db.exec("DROP TABLE IF EXISTS vec_chunks")
