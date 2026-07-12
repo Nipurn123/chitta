@@ -58,19 +58,25 @@ export class RetrievalService {
         this.deps.graph.getUserByUserId(userId),
       ])
 
-      if (Object.keys(accessibleMap).length === 0) {
+      // Accessible VID set, memoized by map identity when the provider supports it (embedded) -
+      // so the O(N) "keys of the whole ACL" work is paid once per data-version, not per query.
+      const allowedVidSet = this.deps.graph.accessibleVidSet?.(accessibleMap)
+      const isEmpty = allowedVidSet ? allowedVidSet.size === 0 : Object.keys(accessibleMap).length === 0
+      if (isEmpty) {
         this.log.error(`No accessible documents for user ${userId} org ${orgId}`)
         return this.empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, RetrievalStatus.ACCESSIBLE_RECORDS_NOT_FOUND)
       }
 
-      // (2) Vector filter restricted to ACL-approved virtual ids.
+      // (2) Vector filter restricted to ACL-approved virtual ids. Pass the memoized SET straight
+      // through when we have it (embedded → no per-query array/Set rebuild); otherwise fall back
+      // to the id array (cloud adapters). Either way the ACL restriction is identical.
       const filter = args.virtualRecordIdsFromTool
         ? await this.deps.vector.filterCollection({
             must: { orgId, virtualRecordId: args.virtualRecordIdsFromTool },
           })
         : await this.deps.vector.filterCollection({
             must: { orgId },
-            should: { virtualRecordId: Object.keys(accessibleMap) },
+            should: allowedVidSet ? { virtualRecordIdSet: allowedVidSet } : { virtualRecordId: Object.keys(accessibleMap) },
           })
 
       const searchResults = await this.executeParallelSearches(queries, filter, limit)

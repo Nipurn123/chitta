@@ -18,6 +18,11 @@ export interface GraphProvider {
     filters?: RetrievalFilters
   }): Promise<AccessibleMap>
 
+  /** OPTIONAL fast path: the accessible VIRTUAL-record-id set, memoized by map identity so the
+   *  retrieval spine doesn't rebuild an O(N) Set of the whole ACL per query. Providers that can't
+   *  memoize simply omit it and the spine falls back to materializing the id array. */
+  accessibleVidSet?(accMap: AccessibleMap): ReadonlySet<string>
+
   getRecordsByRecordIds(recordIds: string[], orgId: string): Promise<RecordDoc[]>
   getUserByUserId(userId: string): Promise<UserDoc | null>
   getUserApps(userKey: string): Promise<Array<{ _key?: string; id?: string }>>

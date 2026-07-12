@@ -38,8 +38,11 @@ export class SqliteVecService implements VectorDBService {
       const filter = req.filter ?? {}
       const limit = req.limit ?? 20
       const mustOrg = filter.must?.["orgId"] as string | undefined
+      // Prefer the pre-built (memoized) ACL set threaded from the retrieval spine - avoids an
+      // O(N) Set rebuild per query. Fall back to the id array (cloud filter shape).
+      const allowedSet = filter.should?.["virtualRecordIdSet"] as ReadonlySet<string> | undefined
       const allowedVids = filter.should?.["virtualRecordId"] as string[] | undefined
-      const allowed = allowedVids ? new Set(allowedVids) : undefined
+      const allowed = allowedSet ?? (allowedVids ? new Set(allowedVids) : undefined)
 
       // Try ANN (vec0 plaintext OR libSQL native DiskANN under encryption); fall back to
       // the fast BLOB brute-force when the index can't serve (missing / not yet built /
@@ -54,7 +57,7 @@ export class SqliteVecService implements VectorDBService {
   private annQuery(
     dense: number[],
     mustOrg: string | undefined,
-    allowed: Set<string> | undefined,
+    allowed: ReadonlySet<string> | undefined,
     limit: number,
   ): VectorPoint[] {
     const knn = this.store.knnSearch(dense, Math.max(limit * 20, 50))
@@ -90,7 +93,7 @@ export class SqliteVecService implements VectorDBService {
   private bruteForce(
     dense: number[] | undefined,
     mustOrg: string | undefined,
-    allowed: Set<string> | undefined,
+    allowed: ReadonlySet<string> | undefined,
     limit: number,
   ): VectorPoint[] {
     if (!dense) return []

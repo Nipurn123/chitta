@@ -57,7 +57,10 @@ export async function graphStage(
   const entitySeeds = queryEntitySeeds(query, store, accMap)
   const seeds = [...new Set([...denseSeeds, ...entitySeeds])]
   if (seeds.length) {
-    const related = [...new Set([...graph.getRelatedRecordIds(seeds, [...new Set(Object.values(accMap))], 5), ...entitySeeds])]
+    // accessible RECORD-id set, memoized by accMap identity (O(1) across queries) - avoids the
+    // per-query O(N) rebuild that dominated once graph traversal itself was bounded.
+    const accRids = graph.accessibleRidSet(accMap)
+    const related = [...new Set([...graph.getRelatedRecordIds(seeds, accRids, 5), ...entitySeeds])]
     if (related.length) {
       const q = await embedQueryWith(embeddings, query)
       const seen = new Set(dense.map((r) => r.metadata.virtualRecordId))

@@ -7,7 +7,7 @@ export function keywordStage(
   store: SqliteStore,
   query: string,
   orgId: string,
-  accessibleVids: Set<string>,
+  accessibleVids: ReadonlySet<string>,
   retrieveLimit: number,
 ): SearchResult[] {
   const bm25: SearchResult[] = []

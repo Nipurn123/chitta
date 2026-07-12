@@ -22,15 +22,97 @@ export function recordsMentioning(sql: SqlAccess, entityIds: string[], accessibl
 
 /** GraphRAG hop: records connected to the seeds through shared/related concepts.
  *  seed records → their entities → relates_to neighbors → other records that
- *  mention those neighbors. Constrained to `accessibleRecordIds` (ACL-safe) and
- *  excluding the seeds themselves. */
+ *  mention those neighbors. Constrained to the `accessible` record-id set (ACL-safe) and
+ *  excluding the seeds themselves.
+ *
+ *  SCALE-INVARIANT by default (O(1) in graph size): the bounded path caps every step to a
+ *  fixed budget, so query latency stays flat as the graph grows to millions of edges. Set
+ *  CONTEXT_GRAPH_BOUNDED=0 for the exact legacy (unbounded, O(density)) behavior - kept for
+ *  the A/B measurement and instant rollback. */
 export function getRelatedRecordIds(
   sql: SqlAccess,
   seedRecordIds: string[],
-  accessibleRecordIds: string[],
+  accessible: ReadonlySet<string>,
   limit = 5,
 ): string[] {
-  if (seedRecordIds.length === 0 || accessibleRecordIds.length === 0) return []
+  if (seedRecordIds.length === 0 || accessible.size === 0) return []
+  return /^(0|false|off)$/i.test(process.env.CONTEXT_GRAPH_BOUNDED ?? "1")
+    ? relatedUnbounded(sql, seedRecordIds, accessible, limit)
+    : relatedBounded(sql, seedRecordIds, accessible, limit)
+}
+
+const REL_EXCL = "('mentions','permissions','belongsTo','inheritPermissions')"
+
+// SCALE-INVARIANT graph hop (O(1) in graph size). A HUB entity (mentioned by more than `hub`
+// records) bridges to everything - it's noise, not signal, and expanding through it is exactly
+// what made this stage O(density). So: (1) fan out ONLY from SPECIFIC (non-hub) seed entities,
+// (2) keep the MAXNB most SPECIFIC (rarest, most discriminating) neighbors, (3) scan only their
+// mentions. Every step is bounded to a fixed budget independent of N. On real (power-law) graphs
+// this drops only the low-relevance long tail - measured recall holds (relevance concentrates in
+// the specific neighborhood). Hub detection uses a LIMIT (hub+1) count, so testing an entity
+// costs O(hub), never O(hub-size) - no precomputed degree, no schema change.
+function relatedBounded(sql: SqlAccess, seedRecordIds: string[], acc: ReadonlySet<string>, limit: number): string[] {
+  const HUB = Number(process.env.CONTEXT_GRAPH_HUB ?? 60)
+  const MAXNB = Number(process.env.CONTEXT_GRAPH_MAXNB ?? 64)
+  const SCAN = Number(process.env.CONTEXT_GRAPH_NB_SCAN ?? 512)
+
+  // Degree, counted only up to HUB+1 - the scan stops early, so a hub costs O(hub), not O(size).
+  // Returns the TRUE degree when ≤ HUB (usable to rank rarest), else hub+1 (the "is-a-hub" flag).
+  const degCapped = (entId: string): number =>
+    sql.rows<{ c: number }>(
+      `SELECT COUNT(*) c FROM (SELECT 1 FROM edges WHERE label = 'mentions' AND dst = ? LIMIT ${HUB + 1})`,
+      [entId],
+    )[0]?.c ?? 0
+
+  // seed entities (bounded), then keep only the SPECIFIC ones - a hub seed would fan out to the
+  // whole graph, so it never seeds expansion.
+  const seedEnts = sql
+    .rows<{ dst: string }>(
+      `SELECT DISTINCT dst FROM edges WHERE label = 'mentions' AND src IN (${sql.ph(seedRecordIds.length)}) LIMIT 256`,
+      seedRecordIds,
+    )
+    .map((r) => r.dst)
+    .filter((e) => degCapped(e) <= HUB)
+  if (seedEnts.length === 0) return []
+
+  const ep = sql.ph(seedEnts.length)
+  // typed-edge neighbors of the specific seeds (LIVE edges only); materialization capped at SCAN.
+  const rawNb = sql
+    .rows<{ e: string }>(
+      `SELECT e FROM (
+          SELECT dst AS e FROM edges WHERE label NOT IN ${REL_EXCL} AND expired_at IS NULL AND src IN (${ep})
+          UNION SELECT src AS e FROM edges WHERE label NOT IN ${REL_EXCL} AND expired_at IS NULL AND dst IN (${ep})
+       ) LIMIT ${SCAN}`,
+      [...seedEnts, ...seedEnts],
+    )
+    .map((r) => r.e)
+
+  // rank neighbors by specificity (rarest first), drop hubs, cap to MAXNB → fixed-size scan set.
+  const nb = [...new Set([...seedEnts, ...rawNb])]
+    .map((id) => ({ id, deg: degCapped(id) }))
+    .filter((x) => x.deg > 0 && x.deg <= HUB)
+    .sort((a, b) => a.deg - b.deg)
+    .slice(0, MAXNB)
+    .map((x) => x.id)
+  if (nb.length === 0) return []
+
+  const seeds = new Set(seedRecordIds)
+  // records mentioning the specific neighbors, ranked by how many they share. Bounded: ≤ MAXNB
+  // neighbors × ≤ HUB mentions each = a fixed scan, regardless of total graph size.
+  return sql
+    .rows<{ src: string }>(
+      `SELECT src, COUNT(*) c FROM edges
+       WHERE label = 'mentions' AND dst IN (${sql.ph(nb.length)})
+       GROUP BY src ORDER BY c DESC LIMIT 256`,
+      nb,
+    )
+    .map((r) => r.src)
+    .filter((id) => acc.has(id) && !seeds.has(id))
+    .slice(0, limit)
+}
+
+// LEGACY unbounded hop (O(density)) - the exact prior behavior, retained for the A/B and rollback.
+function relatedUnbounded(sql: SqlAccess, seedRecordIds: string[], acc: ReadonlySet<string>, limit: number): string[] {
   const seedEnts = sql
     .rows<{ dst: string }>(
       `SELECT DISTINCT dst FROM edges WHERE label = 'mentions' AND src IN (${sql.ph(seedRecordIds.length)})`,
@@ -43,16 +125,15 @@ export function getRelatedRecordIds(
   // Follow entity→entity relation edges of ANY predicate (exclude structural
   // labels), LIVE edges only - superseded facts don't drive current expansion.
   for (const r of sql.rows<{ e: string }>(
-    `SELECT dst AS e FROM edges WHERE label NOT IN ('mentions','permissions','belongsTo','inheritPermissions') AND expired_at IS NULL AND src IN (${ep})
-       UNION SELECT src AS e FROM edges WHERE label NOT IN ('mentions','permissions','belongsTo','inheritPermissions') AND expired_at IS NULL AND dst IN (${ep})`,
+    `SELECT dst AS e FROM edges WHERE label NOT IN ${REL_EXCL} AND expired_at IS NULL AND src IN (${ep})
+       UNION SELECT src AS e FROM edges WHERE label NOT IN ${REL_EXCL} AND expired_at IS NULL AND dst IN (${ep})`,
     [...seedEnts, ...seedEnts],
   ))
     neighbors.add(r.e)
 
   const nb = [...neighbors]
   const seeds = new Set(seedRecordIds)
-  const acc = new Set(accessibleRecordIds)
-  const related = sql
+  return sql
     .rows<{ src: string }>(
       `SELECT src, COUNT(*) c FROM edges
        WHERE label = 'mentions' AND dst IN (${sql.ph(nb.length)})
@@ -61,7 +142,7 @@ export function getRelatedRecordIds(
     )
     .map((r) => r.src)
     .filter((id) => acc.has(id) && !seeds.has(id))
-  return related.slice(0, limit)
+    .slice(0, limit)
 }
 
 /** The knowledge graph the given (already ACL-filtered) records expose:

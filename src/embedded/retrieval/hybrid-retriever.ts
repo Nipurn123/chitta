@@ -45,7 +45,8 @@ export async function hybridSearch(
   // candidate pool scales with the requested topk so breadth queries aren't starved
   const retrieveLimit = Math.max(Number(process.env.CONTEXT_RETRIEVE_LIMIT ?? 20), topk * 2)
   const accMap = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
-  const accessibleVids = new Set(Object.keys(accMap))
+  // memoized by accMap identity → O(1) across queries (was an O(N) rebuild each call)
+  const accessibleVids = graph.accessibleVidSet(accMap)
 
   // ── signal 1: DENSE (vector + ACL) ──
   const { dense, res } = await vectorStage(retrieval, query, userId, orgId, retrieveLimit)
