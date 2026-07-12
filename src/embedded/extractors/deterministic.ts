@@ -107,6 +107,94 @@ function extractTypedRelations(text: string, entities: Map<string, ExtractedEnti
   return out
 }
 
+// ── CONVERSATIONAL extraction (speaker-anchored, zero-token) ──────────────────────────────────
+// Casual dialogue ("I went to Japan", "Mel got a puppy") NEVER matches the prose rules above -
+// they need a Capitalized SUBJECT + verb + Capitalized OBJECT - so a whole conversation yields
+// ZERO typed relations and the graph's cognition sits idle on exactly the data agents see most.
+// These rules (a) ANCHOR first-person "I" to the turn's SPEAKER (a leading "Name:" / "Name (date):"
+// prefix), and (b) accept a bounded LOWERCASE object, so a dialogue turn produces
+// speaker→predicate→object edges. Precision is held by a fixed high-signal verb set, an object
+// stop-list, and a per-doc cap - unmatched turns still fall back to entity co-occurrence.
+const CONV_RULES: Array<{ verb: string; pred: string }> = [
+  { verb: "went to|visited|traveled to|flew to|drove to|have been to|been to", pred: "visited" },
+  { verb: "love|loves|like|likes|enjoy|enjoys|prefer|prefers|adore|adores|am into|'m into", pred: "likes" },
+  { verb: "hate|hates|dislike|dislikes|can't stand|cannot stand", pred: "dislikes" },
+  { verb: "got|bought|adopted|owns?|purchased|have a|have an|has a|has an", pred: "has" },
+  { verb: "play|plays|practice|practices", pred: "does" },
+  { verb: "works? as|am a|'m a|am an|'m an", pred: "is_a" },
+  { verb: "want to|wanna|hope to|plan to|planning to|would love to", pred: "wants_to" },
+]
+// object: optional determiner (dropped) + 1-3 content words (lowercase or Capitalized).
+const OBJ = "(?:the |a |an |my |his |her |their |our |some |new |another )?([A-Za-z][A-Za-z'-]+(?:[ -][A-Za-z][A-Za-z'-]+){0,2})"
+const FP = "\\b[Ii]\\b\\s+(?:just |recently |finally |also |really )?"
+const CONV_REGEX = CONV_RULES.flatMap((r) => [
+  { re: new RegExp(FP + "(?:" + r.verb + ")\\s+" + OBJ, "g"), pred: r.pred, fp: true }, // first-person → speaker
+  { re: new RegExp(CAP + "\\s+(?:" + r.verb + ")\\s+" + OBJ, "g"), pred: r.pred, fp: false }, // Name → object
+])
+// objects too generic to be worth an edge (pronouns, fillers, time words).
+const OBJ_STOP = new Set([
+  "it", "that", "this", "them", "one", "ones", "some", "lot", "lots", "time", "times", "fun", "things", "thing",
+  "stuff", "today", "now", "then", "here", "there", "much", "really", "good", "great", "nice", "sure", "yeah",
+  "you", "me", "us", "him", "her", "everyone", "everything", "anything", "something", "someone", "day", "days",
+  "way", "ways", "bit", "kind", "sort", "part", "lately", "myself", "yourself",
+])
+// A captured object over-runs into the next clause ("puppy last week", "japan in march"); cut it
+// at the first connective / preposition / time word so only the leading noun phrase remains.
+const OBJ_BOUNDARY = new Set([
+  "there", "here", "last", "next", "so", "in", "on", "at", "to", "but", "and", "or", "because", "when",
+  "this", "that", "my", "his", "her", "their", "our", "yesterday", "today", "tomorrow", "week", "weeks",
+  "month", "months", "year", "years", "ago", "recently", "with", "for", "of", "about", "after", "before",
+  "since", "while", "really", "just", "also", "too", "then", "now", "who", "which", "where", "the", "a", "an",
+  "january", "february", "march", "april", "june", "july", "august", "september", "october", "november",
+  "december", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+])
+const cleanObj = (s: string): string | null => {
+  const words: string[] = []
+  for (const w of s.trim().split(/\s+/)) {
+    if (OBJ_BOUNDARY.has(w.toLowerCase())) break // stop at a clause boundary
+    words.push(w)
+  }
+  const t = words.join(" ").replace(/['-]+$/, "").trim()
+  if (t.length < 3) return null
+  const low = t.toLowerCase()
+  if (OBJ_STOP.has(low)) return null
+  if (low.split(/\s+/).every((w) => OBJ_STOP.has(w))) return null // all-filler phrase
+  return t
+}
+
+function extractConversationalRelations(text: string, entities: Map<string, ExtractedEntity>): ExtractedRelation[] {
+  const out: ExtractedRelation[] = []
+  const seen = new Set<string>()
+  const MAX = 300
+  for (const line of text.split(/\n+/)) {
+    // "Name:" or "Name (7 May 2023):" prefix → the turn's speaker (needed to anchor first-person).
+    const sm = line.match(/^\s*([A-Z][A-Za-z][A-Za-z .'-]*?)\s*(?:\([^)]*\))?\s*:\s*(.*)$/)
+    const speaker = sm ? sm[1].trim() : null
+    const body = sm ? sm[2] : line
+    for (const { re, pred, fp } of CONV_REGEX) {
+      if (fp && !speaker) continue // first-person edge needs a known speaker
+      re.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = re.exec(body)) !== null) {
+        if (out.length >= MAX) return out
+        const subjLabel = fp ? (speaker as string) : trimEnt(m[1])
+        const objRaw = cleanObj(m[fp ? 1 : 2])
+        if (!subjLabel || subjLabel.length < 2 || !objRaw) continue
+        const a = slug(subjLabel)
+        const b = slug(objRaw)
+        if (!a || !b || a === b) continue
+        const key = `${a}|${pred}|${b}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        if (!entities.has(a)) entities.set(a, { id: a, label: subjLabel, type: fp ? "PERSON" : "ENTITY" })
+        if (!entities.has(b)) entities.set(b, { id: b, label: objRaw, type: "CONCEPT" })
+        out.push({ from: a, to: b, type: pred, confidence: 0.5 }) // conversational tier (below prose 0.6)
+      }
+    }
+  }
+  return out
+}
+
 export function extractKnowledge(text: string): Extraction {
   const entities = new Map<string, ExtractedEntity>()
   const relations = new Map<string, ExtractedRelation>()
@@ -128,6 +216,10 @@ export function extractKnowledge(text: string): Extraction {
   // TYPED relations (high-precision) on top of co-occurrence - these are what make the
   // graph + memory layer intelligent WITHOUT an LLM.
   for (const r of extractTypedRelations(text, entities)) relations.set(`typed|${r.from}|${r.type}|${r.to}`, r)
+  // CONVERSATIONAL relations (speaker-anchored) - so casual dialogue also fills the graph, not
+  // just fact-dense prose. Lower-confidence, so a prose typed edge for the same pair still wins.
+  for (const r of extractConversationalRelations(text, entities))
+    if (!relations.has(`typed|${r.from}|${r.type}|${r.to}`)) relations.set(`conv|${r.from}|${r.type}|${r.to}`, r)
 
   return { entities: [...entities.values()], relations: [...relations.values()] }
 }
