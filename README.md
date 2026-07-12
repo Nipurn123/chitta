@@ -1,8 +1,31 @@
-# Chitta
+<div align="center">
+
+# 🧠 Chitta
+
+### Permanent memory for AI coding agents. Zero LLM tokens, ever.
+
+One SQLite file that remembers everything your agent learns - across sessions, forever -
+and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per query.
+
+<p>
+  <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
+  <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
+  <img src="https://img.shields.io/badge/tests-329%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
+  <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
+</p>
+
+**[Install](#install)** · **[See it remember](#see-it-remember-30-seconds)** · **[Benchmarks](#benchmarks--performance)** · **[SDK](docs/SDK.md)** · **[Architecture](ARCHITECTURE.md)** · **[vs mem0 / Zep](#how-chitta-compares)**
+
+<a href="docs/assets/chitta-graph.mp4"><img src="docs/assets/chitta-graph.gif" width="640" alt="Chitta knowledge graph - a rotating 3D constellation of concepts, colored by type and linked by relationships"/></a>
+
+<sub>A real Chitta knowledge graph - 285 concepts, 291 relationships, colored by type, labeled hubs. <a href="docs/assets/chitta-graph.mp4">▶ full-quality MP4</a> · make your own with <code>chitta graph --open</code></sub>
 
 <!-- LANG-PICKER-START -->
-<p align="center">
-  <b>English</b> ·
+<details>
+<summary><b>🌐 Read this in 22 languages</b></summary>
+<p>
   <a href="docs/translations/README.zh-CN.md">简体中文</a> ·
   <a href="docs/translations/README.zh-TW.md">繁體中文</a> ·
   <a href="docs/translations/README.ja-JP.md">日本語</a> ·
@@ -25,21 +48,10 @@
   <a href="docs/translations/README.nl-NL.md">Nederlands</a> ·
   <a href="docs/translations/README.th-TH.md">ภาษาไทย</a>
 </p>
+</details>
 <!-- LANG-PICKER-END -->
 
-<p>
-  <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
-  <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-329%20passing-brightgreen" alt="Tests"/>
-  <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
-  <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
-</p>
-
-<p align="center">
-  <a href="docs/assets/chitta-graph.mp4"><img src="docs/assets/chitta-graph.gif" width="640" alt="Chitta knowledge graph - a rotating 3D constellation of concepts, colored by type and linked by relationships"/></a>
-</p>
-<p align="center"><sub>A real Chitta knowledge graph - 285 concepts, 291 relationships, colored by type, labeled hubs. <a href="docs/assets/chitta-graph.mp4">▶ full-quality MP4</a> · make your own with <code>chitta graph --open</code></sub></p>
+</div>
 
 ***Chitta*** (चित्त) - in Indian philosophy, the mind's storehouse where every impression is
 kept. **Permanent memory for your AI coding agent**, by **[100xprompt](https://github.com/Nipurn123)**.
@@ -51,14 +63,19 @@ runs **fully offline on one SQLite file**, and spends **zero LLM tokens** to sto
 One command wires it into the agent you already use (Claude Code, Cursor, Codex - **17 tools**),
 or import it as an embeddable **SDK**.
 
-**Your agent's memory shouldn't cost a fortune in tokens.** Stuffing your notes into every
-prompt burns thousands of tokens per call - and the agent *still* forgets tomorrow. Chitta
-fixes both:
+## Why this is the most advanced memory layer you can run
 
-- 📉 **Up to 143× less context per query** - retrieves the ~181 tokens that matter instead of dumping 25,864 into the prompt (measured on LoCoMo; the ratio grows with your corpus)
-- ⚡ **Zero LLM tokens to store *or* recall** - local embeddings + a deterministic knowledge graph do the work, not an LLM (competitors spend ~6,900 tokens/query; Chitta spends **0**)
-- 🧠 **Remembers across sessions** - permanent memory, not per-chat context you re-paste every morning
-- 🔒 **100% local & offline** - one SQLite file, no API keys, nothing leaves your machine
+| | |
+|---|---|
+| ⚡ **Zero LLM tokens, ever** | Local embeddings + deterministic extraction handle store *and* recall. Typical memory layers burn ~6,900 tokens per query; Chitta burns **0**. Free at any scale. |
+| 🧠 **Remembers across sessions** | One SQLite file survives restarts, new chats, new weeks. Tell it once; it knows forever. |
+| 📉 **Up to 143× less context** | Hands your agent the ~181 tokens that matter instead of dumping 25,864 into the prompt (measured on LoCoMo; grows with your corpus). |
+| 🕸️ **A mind you can see** | Every fact becomes typed entities + relations. `chitta graph --open` renders your agent's memory as an interactive constellation. |
+| 🧬 **Self-correcting** | "Sarah moved to Meta" supersedes "works at Google" - confidence-aware belief revision, contradiction detection, history kept. No LLM involved. |
+| ⏳ **Reasons over time** | Bi-temporal store: how a subject *evolved*, and exactly what was believed **as of** any past date. |
+| 🔒 **Permission-aware to the core** | The ACL decides the candidate set *before* the vector index is touched. One shared graph, per-user visibility, leak-proof by construction. |
+| 🛠️ **One command, 17 tools** | Installs as an MCP server + Skill into Claude Code, Cursor, Codex, Windsurf, Zed and more - or import the SDK directly. |
+| 🔐 **Encrypted, audited, yours** | Optional AES-256 at rest with key rotation, a tamper-evident audit log, and nothing - ever - leaving your machine. |
 
 ```ts
 import { Chitta } from "@100xprompt/chitta"
@@ -446,6 +463,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module internals and the se
   <img src="https://api.star-history.com/svg?repos=Nipurn123/chitta&type=Date" alt="Star History Chart" width="600"/>
 </a>
 
-## License
+---
 
-[MIT](LICENSE) © 2026 Nipurn Agarwal
+<div align="center">
+
+**🧠 Chitta** - give your agent a mind that lasts.
+
+Built by [Nipurn Agarwal](https://github.com/Nipurn123) · [MIT](LICENSE) © 2026
+
+**[⬆ Back to top](#-chitta)**
+
+</div>
