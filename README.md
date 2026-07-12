@@ -84,19 +84,23 @@ access allows (the part every other memory layer treats as an afterthought).
 
 ## The idea behind Chitta
 
-We didn't invent this idea — we engineered it. In April 2026, Andrej Karpathy described spending
-his tokens *"manipulating knowledge, not code"*: use an LLM to build a knowledge base **once**,
-then query it — instead of re-reasoning (and re-paying) for the same thing on every call.
+We didn't invent this idea — we made it free. In April 2026, Andrej Karpathy described shifting his
+token budget from *"manipulating code"* to *"manipulating knowledge"*: use an LLM to **compile** your
+source docs into a structured wiki (summaries, backlinks, concepts), then ask questions against it
+instead of re-reasoning every time.
 
 <p align="center">
   <a href="https://x.com/karpathy/status/2039805659525644595"><img src="docs/assets/karpathy-idea.svg" width="560" alt="Andrej Karpathy: using LLMs to build personal knowledge bases — 'my token throughput is going less into manipulating code, and more into manipulating knowledge.'"/></a>
 </p>
 <p align="center"><sub>Andrej Karpathy on LLM knowledge bases — <a href="https://x.com/karpathy/status/2039805659525644595">the tweet</a>. His general take on the approach, not an endorsement of Chitta.</sub></p>
 
-**Chitta is that principle, automated.** Karpathy hand-prompts an LLM to maintain a markdown wiki;
-Chitta builds a **permission-aware knowledge graph** from whatever your agent already sees, keeps
-it current (self-correcting, temporal), and answers from it at **zero tokens** — no LLM in the
-recall path at all. The intelligence goes in once, at write time; every recall after that is free.
+**Chitta is that idea, automated — and zero-token at both ends.** Karpathy hand-drives an LLM to
+compile and maintain the wiki (which is *why*, in his words, so much of his token throughput now goes
+into it) — single-user, in Obsidian, at what he calls *"~small scale."* Chitta does the same job —
+turn what your agent sees into a queryable knowledge base — but the compilation is **deterministic**
+(no LLM at write *or* read), **permission-aware** across a shared graph, and built to scale past small.
+He even says it himself: *"I thought I had to reach for fancy RAG."* **Chitta is what you reach for
+when you outgrow letting an LLM hand-maintain markdown.**
 
 ## See it remember (30 seconds)
 
