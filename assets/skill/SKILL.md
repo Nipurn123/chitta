@@ -1,6 +1,6 @@
 ---
 name: chitta
-description: Permission-aware long-term memory for AI agents. Use to recall prior context before answering, store durable facts/decisions/preferences, profile a person/entity, forget retracted facts, and query how concepts relate. Backed by Chitta's MCP tools (get_context, context_ingest, context_forget, context_profile, context_graph, context_relate) with a CLI fallback. Trigger whenever a task may depend on earlier work, when the user shares something worth remembering, when a fact is retracted, or when asked who/what something is or how things connect.
+description: Permission-aware long-term memory for AI agents. Use to recall prior context before answering, store durable facts/decisions/preferences, profile a person/entity, forget retracted facts, query how concepts relate, and check memory status. Backed by Chitta's MCP tools (get_context, context_ingest, context_forget, context_profile, context_graph, context_relate, context_health) with a CLI fallback. Trigger whenever a task may depend on earlier work, when the user shares something worth remembering, when a fact is retracted, or when asked who/what something is or how things connect.
 ---
 
 # Chitta - memory for this agent
@@ -18,7 +18,8 @@ permissions allow. Use it proactively - memory is only useful if you reach for i
 2. **Store durable knowledge.** When the user states a lasting fact, decision, preference, or
    you produce an artifact worth remembering, call **`context_ingest`** with the text plus the
    `entities` and `relations` you identified (precise typed triples). Don't store secrets,
-   throwaway chatter, or transient state.
+   throwaway chatter, or transient state. If the response carries a `note:` that the new fact
+   superseded or contradicted a previous belief, relay that to the user - their memory changed.
 3. **Forget what's retracted.** When the user says "forget that" or a fact is no longer true,
    call **`context_forget`** with a description of what to drop (the new value alone also
    auto-supersedes an old single-valued fact on ingest).
@@ -26,6 +27,8 @@ permissions allow. Use it proactively - memory is only useful if you reach for i
    - it returns permanent facts + recent facts (contradictions already resolved) + connections.
 5. **Reason over connections.** For "how are X and Y related" or to map a topic, call
    **`context_graph`** (the concept map) or **`context_relate`** (neighbors / path / impact).
+6. **Check memory status.** For "what does my memory look like" / "how much do you remember",
+   call **`context_health`** - store size, memory counts by kind, engine status, top concepts.
 
 ## The MCP tools
 
@@ -37,6 +40,7 @@ permissions allow. Use it proactively - memory is only useful if you reach for i
 | `context_profile` | Profile a person/org/entity: permanent + recent facts + connections |
 | `context_graph` | Return the accessible knowledge graph (concepts + relationships) |
 | `context_relate` | Graph queries over the entity graph (neighbors / path / impact / central) |
+| `context_health` | Memory checkup: store size, memory kinds, engine status, most-connected concepts |
 
 ## CLI fallback (no MCP)
 

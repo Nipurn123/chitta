@@ -1,6 +1,7 @@
 import type { ContextBackend } from "../backend"
 import { slug, type ToolModule, type ToolResult } from "./types"
 import { rateLimitIngest, IngestLimitError } from "../../security/limits"
+import { sanitizeText } from "../../security/sanitize"
 
 const schema = {
   name: "context_ingest",
@@ -120,11 +121,18 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
   const epi = a.episodes?.length ? `, ${a.episodes.length} episode(s)` : ""
   const proc = a.procedures?.length ? `, ${a.procedures.length} procedure(s)` : ""
   const vis = a.org_wide ? "org-wide" : a.share?.length ? `shared with ${a.share.join(", ")}` : "private"
-  return {
-    content: [
-      { type: "text", text: `Stored "${a.name}" (${out.chunks} chunk(s), ${out.entities} concept(s)${typed}${epi}${proc}; ${vis}) as ${out.recordId}.` },
-    ],
+  const lines = [`Stored "${a.name}" (${out.chunks} chunk(s), ${out.entities} concept(s)${typed}${epi}${proc}; ${vis}) as ${out.recordId}.`]
+  // PROACTIVE contradiction surfacing: when this write revised an existing belief, SAY SO -
+  // the agent reading this can tell the user what changed. Nothing contradicted ⇒ no notes,
+  // response identical to before. History is kept either way (versions/soft-forget).
+  for (const r of out.revisions ?? []) {
+    lines.push(
+      r.kind === "superseded"
+        ? `note: this superseded a previous belief: "${sanitizeText(r.previous)}" -> "${sanitizeText(r.current)}"${r.version ? ` (now v${r.version}; history kept)` : ""}`
+        : `note: this contradicted a previous belief: "${sanitizeText(r.previous)}" -> "${sanitizeText(r.current)}" (old belief retired; history kept)`,
+    )
   }
+  return { content: [{ type: "text", text: lines.join("\n") }] }
 }
 
 export const contextIngestTool: ToolModule = { schema, handler, available: (b) => !!b.ingest }

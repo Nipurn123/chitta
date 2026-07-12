@@ -34,6 +34,21 @@ export interface ExactAnswer {
   confidence: number
 }
 
+/** One belief revision caused by an ingest - the engine resolved a conflict with an
+ *  existing belief while storing the new content. `superseded` = a single-valued fact
+ *  (or procedure) got a new version; `contradicted` = an antonym assertion retired the
+ *  old belief. History is kept either way; this just surfaces WHAT changed so the
+ *  calling agent can tell the user. */
+export interface BeliefRevision {
+  kind: "superseded" | "contradicted"
+  /** The belief that was current before this ingest. */
+  previous: string
+  /** The belief that is current now. */
+  current: string
+  /** The new version number within the chain (supersessions only). */
+  version?: number
+}
+
 export interface ContextBackend {
   mode: "central" | "local"
   userId: string
@@ -74,7 +89,9 @@ export interface ContextBackend {
   asOf?: (t: number, subject?: string) => Promise<string[]>
   /** Reflection: synthesized higher-order insights over the caller's accessible memory. Local. */
   reflect?: () => Promise<Array<{ category: string; text: string }>>
-  ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number }>
+  /** Store a document. `revisions` (when present) are the beliefs this ingest superseded
+   *  or contradicted - the write side's contradiction report, for the tool to surface. */
+  ingest?: (doc: IngestDoc) => Promise<{ recordId: string; chunks: number; entities: number; revisions?: BeliefRevision[] }>
   /** The accessible knowledge graph (entities + relations). Local mode only. */
   graph?: () => Promise<KnowledgeGraph>
   /** Re-extract the knowledge graph over all records with the current extractor
@@ -123,6 +140,36 @@ export function resolveBackend(): ContextBackend {
 
   const ctx = personalContext()
   const count = (sql: string) => (ctx.store.db.query(sql).get() as { c: number }).c
+
+  // Belief revisions caused by ONE just-finished ingest, read back from the version
+  // chains the engine wrote (the engine itself is untouched). Two shapes, both scoped
+  // to the new record so the read is cheap and can't pick up unrelated history:
+  //   • SUPERSESSION - the ingest inserted a new version (relation='updates') whose
+  //     parent row is the belief it replaced (works_at: Google → Meta; procedures too).
+  //   • CONTRADICTION - an antonym assertion retired the old belief: the engine forgets
+  //     it with reason `contradicted by "<new memory>"`, and the new memory belongs to
+  //     this record. `since` guards against matching a same-text forget from the past.
+  const revisionsFor = (recordId: string, since: number): BeliefRevision[] => {
+    const superseded = ctx.store.db
+      .query(
+        `SELECT p.memory prev, m.memory cur, m.version v FROM memories m
+         JOIN memories p ON p.id = m.parent_id
+         WHERE m.source_record_id = ? AND m.relation = 'updates'`,
+      )
+      .all(recordId) as Array<{ prev: string; cur: string; v: number }>
+    const contradicted = ctx.store.db
+      .query(
+        `SELECT p.memory prev, m.memory cur FROM memories m
+         JOIN memories p ON p.forget_reason = 'contradicted by "' || m.memory || '"'
+         WHERE m.source_record_id = ? AND p.is_forgotten = 1 AND p.updated_at >= ?`,
+      )
+      .all(recordId, since) as Array<{ prev: string; cur: string }>
+    return [
+      ...superseded.map((r) => ({ kind: "superseded" as const, previous: r.prev, current: r.cur, version: r.v })),
+      ...contradicted.map((r) => ({ kind: "contradicted" as const, previous: r.prev, current: r.cur })),
+    ]
+  }
+
   return {
     mode: "local",
     userId: ctx.userId,
@@ -169,7 +216,14 @@ export function resolveBackend(): ContextBackend {
     timeline: (subject) => ctx.timeline(subject, ctx.userId, ctx.orgId),
     asOf: (t, subject) => ctx.asOf(t, ctx.userId, ctx.orgId, subject),
     reflect: () => ctx.reflect(ctx.userId, ctx.orgId),
-    ingest: (doc) => ctx.authorizedIngest(ctx.userId, doc), // write-side authorization + ownership
+    // Write-side authorization + ownership, then report any beliefs this write revised
+    // (so context_ingest can tell the agent a contradiction was resolved, not silently).
+    ingest: async (doc) => {
+      const t0 = Date.now()
+      const out = await ctx.authorizedIngest(ctx.userId, doc)
+      const revisions = revisionsFor(out.recordId, t0)
+      return revisions.length ? { ...out, revisions } : out
+    },
     graph: async () => {
       const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: ctx.userId, orgId: ctx.orgId })
       const recordIds = [...new Set(Object.values(accessible))]

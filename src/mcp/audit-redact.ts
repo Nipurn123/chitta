@@ -7,6 +7,6 @@
 export function auditTarget(name: string, args: Record<string, unknown>): string {
   const a = args as Record<string, string>
   if (name === "context_ingest") return `name="${a.name ?? ""}" (${(a.content ?? "").length} bytes)`
-  if (name === "context_about" || name === "context_graph" || name === "context_rebuild") return ""
+  if (name === "context_about" || name === "context_graph" || name === "context_rebuild" || name === "context_health") return ""
   return String(a.query ?? a.subject ?? a.name ?? "").slice(0, 200)
 }

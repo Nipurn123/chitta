@@ -13,6 +13,7 @@ import { contextRebuildTool } from "./context-rebuild"
 import { contextRelateTool } from "./context-relate"
 import { contextTimelineTool } from "./context-timeline"
 import { contextReflectTool } from "./context-reflect"
+import { contextHealthTool } from "./context-health"
 import { contextAboutTool, setAboutToolList } from "./context-about"
 import type { ToolModule, ToolResult, ToolSchema } from "./types"
 
@@ -26,6 +27,7 @@ const ALL: ToolModule[] = [
   contextRelateTool,
   contextTimelineTool,
   contextReflectTool,
+  contextHealthTool,
   contextAboutTool,
 ]
 

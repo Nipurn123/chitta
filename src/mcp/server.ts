@@ -8,20 +8,29 @@
 //   "mcp": { "context": { "type": "local", "command": ["chitta"],
 //            "environment": { "CONTEXT_USER_ID": "alice", "CONTEXT_ORG_ID": "acme" } } }
 //
-// The 6 tools live one-per-module under ./tools; this file just wires the server:
+// The tools live one-per-module under ./tools; this file just wires the server:
 // resolve the backend, build the (capability-gated) tool list, register ListTools
-// from those schemas, dispatch CallTool through the name→handler map, and connect
-// the stdio transport.
+// from those schemas, dispatch CallTool through the name→handler map, register the
+// read-only MCP resources (memory://graph, memory://profile/{entity}, memory://stats
+// - see ./resources), and connect the stdio transport.
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { resolveBackend } from "./backend"
 import { resolveTools } from "./tools"
+import { resolveResources } from "./resources"
 import { auditTarget } from "./audit-redact"
 
 const backend = resolveBackend()
 const { schemas, dispatch } = resolveTools(backend)
+const resources = resolveResources(backend)
 
 const INSTRUCTIONS = [
   "100x Context - a permission-aware knowledge graph + vector memory. It is the user's / organization's",
@@ -40,6 +49,8 @@ const INSTRUCTIONS = [
   "  Always check memory first instead of guessing. If it returns nothing, say so plainly.",
   "• context_graph - Call when the user asks how things relate, for an overview, or 'what do you know about X' /",
   "  'how are these connected' - it returns the concept map (entities + relationships).",
+  "• context_health - Call for a quick 'what does my memory look like' checkup: store size, memory counts by",
+  "  kind, engine status (ANN/encryption/audit), and the most-connected concepts.",
   "• context_about - Call to discover this server's capabilities, current mode, storage, engines, and live stats",
   "  (e.g. when unsure what memory can do, or to report status).",
   "",
@@ -58,15 +69,33 @@ const INSTRUCTIONS = [
   "  knowledge base, but each user sees only what their ACL permits. Identity comes from CONTEXT_USER_ID/ORG_ID.",
   "",
   "DEFAULT BEHAVIOR: prefer recall over guessing (get_context first); ingest durable facts proactively; cite",
-  "what you retrieve.",
+  "what you retrieve. When a context_ingest response carries a 'note:' that it superseded or contradicted a",
+  "previous belief, RELAY that to the user - they should know their stored memory just changed.",
 ].join("\n")
 
 const server = new Server(
   { name: "100x-context", version: "0.1.0" },
-  { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
+  { capabilities: { tools: {}, resources: {} }, instructions: INSTRUCTIONS },
 )
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: schemas }))
+
+// Read-only resources: the same ACL-scoped payloads as the tools, as URI-addressable
+// JSON (memory://graph, memory://profile/{entity}, memory://stats). Reads are audited
+// like tool calls so "who read what" stays complete when auditing is on.
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: resources.list }))
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: resources.templates }))
+server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+  const uri = req.params.uri
+  try {
+    const contents = await resources.read(uri)
+    backend.audit?.({ action: "resources/read", target: uri, ok: true })
+    return { contents: [contents] }
+  } catch (e) {
+    backend.audit?.({ action: "resources/read", target: uri, ok: false, detail: "error" })
+    throw e
+  }
+})
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params

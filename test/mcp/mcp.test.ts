@@ -30,8 +30,9 @@ describe("100x-context MCP endpoint", () => {
     const { tools } = await client.listTools()
     const names = tools.map((t) => t.name).sort()
     expect(names).toEqual([
-      "context_about", "context_forget", "context_graph", "context_ingest", "context_profile",
-      "context_rebuild", "context_reflect", "context_relate", "context_timeline", "get_context",
+      "context_about", "context_forget", "context_graph", "context_health", "context_ingest",
+      "context_profile", "context_rebuild", "context_reflect", "context_relate", "context_timeline",
+      "get_context",
     ])
   })
 
