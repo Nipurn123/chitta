@@ -18,11 +18,13 @@ export async function ingestCase(
   const t0 = performance.now()
   let fullHistoryTokens = 0
   for (const item of c.history) {
-    // Prepend the event/session date to the text so it's part of the SEARCHABLE + ANSWERABLE
-    // memory. Many benchmark answers are dates ("7 May 2023"), which live in session metadata,
-    // not the turn text - dropping them makes every "when" question unanswerable even when the
-    // right turn is retrieved. Real memory systems store WHEN something was said; so must this.
-    const text = item.timestamp ? `(${item.timestamp}) ${item.text}` : item.text
+    // Attribute each turn with WHO said it + WHEN, so both are part of the SEARCHABLE +
+    // ANSWERABLE memory. Dialogue answers are frequently a speaker ("who said X?") or a date
+    // ("7 May 2023") that live in session metadata, not the turn text - dropping either makes
+    // those questions unanswerable even when the right turn is retrieved. Real memory stores
+    // who said what, when; so must this. Format: "Caroline (8 May 2023): I went yesterday".
+    const tag = [item.speaker, item.timestamp ? `(${item.timestamp})` : ""].filter(Boolean).join(" ")
+    const text = tag ? `${tag}: ${item.text}` : item.text
     fullHistoryTokens += approxTokens(text)
     await ctx.authorizedIngest(userId, {
       recordId: item.id,
