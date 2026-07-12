@@ -1,7 +1,7 @@
-// Reciprocal Rank Fusion (RRF) - fuse the dense/sparse/graph signal lists into one
-// ranked list with no score-scale calibration. RRF score = Σ 1/(k + rank) across the
-// lists a chunk appears in (k=60), so a chunk strong in ANY signal surfaces, and one
-// strong in several rises to the top.
+// Reciprocal Rank Fusion (RRF) - fuse the dense/sparse/graph (+ optional PPR) signal
+// lists into one ranked list with no score-scale calibration. RRF score = Σ 1/(k + rank)
+// across the lists a chunk appears in (k=60), so a chunk strong in ANY signal surfaces,
+// and one strong in several rises to the top.
 import type { SqliteStore } from "../sqlite-store"
 import type { AccessibleMap, SearchResult } from "../../types"
 
@@ -12,6 +12,7 @@ export function rrfFuse(
   bm25: SearchResult[],
   graphList: SearchResult[],
   K: number,
+  pprList: SearchResult[] = [], // 4th leg: PPR multi-hop (CONTEXT_GRAPH_PPR)
 ): FusedResult[] {
   const keyOf = (r: SearchResult) => (r.metadata.point_id as string) ?? `${r.metadata.virtualRecordId ?? ""}|${r.content.slice(0, 80)}`
   const fused = new Map<string, FusedResult>()
@@ -30,6 +31,7 @@ export function rrfFuse(
   fuse(dense, "vector")
   fuse(bm25, "keyword")
   fuse(graphList, "graph")
+  fuse(pprList, "ppr")
   return [...fused.values()]
 }
 

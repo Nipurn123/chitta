@@ -1,8 +1,11 @@
-// HYBRID retrieval orchestrator - three complementary signals fused with Reciprocal
+// HYBRID retrieval orchestrator - complementary signals fused with Reciprocal
 // Rank Fusion (the 2026 production default), then re-ranked. Signals:
 //   • DENSE  (vector + ACL) - semantic similarity (paraphrase, meaning).
 //   • SPARSE (BM25 / FTS5)  - exact tokens dense misses (acronyms "SAP", "£230M").
-//   • GRAPH  (GraphRAG)     - chunks reachable through related concepts.
+//   • GRAPH  (GraphRAG)     - chunks reachable through related concepts (1 hop).
+//   • PPR    (HippoRAG)     - multi-hop: Personalized PageRank from the query's
+//     entities over the ACL-scoped typed graph (CONTEXT_GRAPH_PPR, default off -
+//     measured neutral on LoCoMo dialogues; see ppr-stage.ts for when to enable).
 // RRF score = Σ 1/(k + rank) across the lists a chunk appears in (k=60), so a chunk
 // strong in ANY signal surfaces, and one strong in several rises to the top - with no
 // score-scale calibration between cosine and BM25. Then: personal boost (ownership),
@@ -17,6 +20,7 @@ import type { RetrievalResponse } from "../../types"
 import { vectorStage } from "./vector-stage"
 import { keywordStage } from "./keyword-stage"
 import { graphStage } from "./graph-stage"
+import { pprStage, pprEnabled } from "./ppr-stage"
 import { rrfFuse, backfillMeta, mergeFused } from "./fuse"
 import { expansionTerms } from "./prf"
 import { decayConfig, decayStage } from "./decay-stage"
@@ -60,9 +64,15 @@ export async function hybridSearch(
   // ── signal 3: GRAPH expansion (concept-connected chunks) ──
   const graphList = await graphStage(graph, store, embeddings, query, orgId, dense, accMap)
 
+  // ── signal 4 (opt-in): PPR multi-hop (HippoRAG-style walk from the query's entities) ──
+  // The bounded hop above reaches 1 relation edge out; PPR reaches 2-3, bounded and
+  // ACL-fail-closed. Off by default (measured on LoCoMo - see ppr-stage.ts); when the
+  // flag is off this is [] and the pipeline is byte-identical to the pre-PPR one.
+  const pprList = pprEnabled() ? await pprStage(graph, store, embeddings, query, orgId, dense, accMap) : []
+
   // ── Reciprocal Rank Fusion ──
   const K = Number(process.env.CONTEXT_RRF_K ?? 60)
-  const merged = rrfFuse(dense, bm25, graphList, K)
+  const merged = rrfFuse(dense, bm25, graphList, K, pprList)
   backfillMeta(store, merged, accMap)
 
   // ── optional PRF: a 2nd retrieval hop, LLM-free ──
@@ -98,7 +108,7 @@ export async function hybridSearch(
   const relevant = diversityStage(store, ordered, query, cutoff, cfg.maxPerRecord, topk, cfg.decayOn)
 
   // retrieval trace for the UI: counts per signal + which legs found each top item.
-  if (trace) populateTrace(trace, dense, bm25, graphList, merged, ordered, rerankerUsed)
+  if (trace) populateTrace(trace, dense, bm25, graphList, merged, ordered, rerankerUsed, pprList)
 
   return { ...res, searchResults: relevant }
 }

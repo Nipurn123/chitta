@@ -5,7 +5,8 @@ import type { SearchResult } from "../../types"
 import type { FusedResult } from "./fuse"
 
 export interface SearchTrace {
-  counts: { vector: number; keyword: number; graph: number; fused: number }
+  // `ppr` optional so existing constructors (and serialized traces) stay valid.
+  counts: { vector: number; keyword: number; graph: number; fused: number; ppr?: number }
   reranked: boolean
   items: Array<{ label: string; recordId?: string; legs: string[]; rrf: number; rank: number }>
 }
@@ -18,8 +19,9 @@ export function populateTrace(
   merged: FusedResult[],
   ordered: FusedResult[],
   rerankerUsed: boolean,
+  pprList: SearchResult[] = [],
 ): void {
-  trace.counts = { vector: dense.length, keyword: bm25.length, graph: graphList.length, fused: merged.length }
+  trace.counts = { vector: dense.length, keyword: bm25.length, graph: graphList.length, fused: merged.length, ppr: pprList.length }
   trace.reranked = rerankerUsed
   trace.items = ordered.slice(0, 8).map((r, i) => ({
     label: (r.metadata.recordName as string) ?? (r.metadata.recordId as string) ?? "?",
