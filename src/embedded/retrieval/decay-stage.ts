@@ -19,6 +19,8 @@ export interface DecayConfig {
   lambda: number
   decayFloor: number
   accessW: number
+  validity: boolean
+  validityPenalty: number
 }
 
 export function decayConfig(): DecayConfig {
@@ -30,7 +32,30 @@ export function decayConfig(): DecayConfig {
     lambda: Math.LN2 / Math.max(1, Number(process.env.CONTEXT_DECAY_HALFLIFE_DAYS ?? 60)),
     decayFloor: Number(process.env.CONTEXT_DECAY_FLOOR ?? 0.5),
     accessW: Number(process.env.CONTEXT_DECAY_ACCESS_W ?? 0.15),
+    // Temporal-validity retrieval (Zep's edge, deterministic): down-rank a record that asserted
+    // a fact that has since been SUPERSEDED, so the CURRENT-truth record wins. Default on.
+    validity: !/^(0|false|off)$/i.test(process.env.CONTEXT_VALIDITY ?? "1"),
+    validityPenalty: Number(process.env.CONTEXT_VALIDITY_PENALTY ?? 0.5),
   }
+}
+
+// Records that asserted a now-SUPERSEDED fact (a typed edge with expired_at set names them in
+// its provenance). One query over the (small) set of expired typed edges - not per-record.
+function staleRecords(store: SqliteStore, recIds: string[]): Set<string> {
+  const stale = new Set<string>()
+  if (recIds.length === 0) return stale
+  const want = new Set(recIds)
+  const rows = store.db
+    .query(
+      `SELECT provenance FROM edges
+       WHERE expired_at IS NOT NULL
+         AND label NOT IN ('mentions','permissions','belongsTo','inheritPermissions','relates_to')`,
+    )
+    .all() as Array<{ provenance: string }>
+  for (const row of rows) {
+    for (const rid of JSON.parse(row.provenance) as string[]) if (want.has(rid)) stale.add(rid)
+  }
+  return stale
 }
 
 // Mutates each merged item's `rrf` in place by personal boost + decay/salience, then
@@ -45,6 +70,7 @@ export function decayStage(store: SqliteStore, merged: FusedResult[], userId: st
       if (row.o) ownerMap.set(row.id, row.o)
   const now = Date.now()
   const salience = cfg.decayOn ? store.recordSalience(recIds) : null
+  const stale = cfg.validity ? staleRecords(store, recIds) : null
   for (const r of merged) {
     if (ownerMap.get(r.metadata.recordId as string) === userId) r.rrf *= cfg.personalBoost
     const s = salience?.get(r.metadata.recordId as string)
@@ -54,6 +80,9 @@ export function decayStage(store: SqliteStore, merged: FusedResult[], userId: st
       const accessBoost = 1 + cfg.accessW * Math.log1p(s.accessCount)
       r.rrf *= (s.importance || 1) * (cfg.decayFloor + (1 - cfg.decayFloor) * recency) * accessBoost
     }
+    // Temporal validity: this record's fact was superseded → it's stale, so the current-truth
+    // record ranks above it ("works at Meta" beats the outdated "works at Google").
+    if (stale?.has(r.metadata.recordId as string)) r.rrf *= cfg.validityPenalty
   }
   merged.sort((a, b) => b.rrf - a.rrf)
 }
