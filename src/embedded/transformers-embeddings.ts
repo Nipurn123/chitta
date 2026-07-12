@@ -43,6 +43,9 @@ export class TransformersEmbeddings implements EmbeddingProvider {
   private readonly prefix: { query: string; doc: string } | null
   // Matryoshka: truncate to CONTEXT_EMBED_DIM then re-normalize - big storage/speed
   // win at minimal quality loss. EmbeddingGemma (native 768) defaults to 256; 0 ⇒ full.
+  // (Distinct from CONTEXT_MRL_DIMS: this truncates what gets STORED - lossy, changes the
+  // vector space; the sqlite-vec-service two-stage path truncates only the stage-1 SCAN
+  // and rescores at full dimension, so it is lossless at the interface.)
   private readonly dim: number
   constructor(private readonly model = "Xenova/bge-small-en-v1.5") {
     this.prefix = prefixesFor(model)
