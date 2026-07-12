@@ -46,6 +46,14 @@ function parseJsonBlock(s: string): any {
   }
 }
 
+// Process-wide LLM request counters (observability for LLM extraction / benchmark mode). Logged
+// to stderr every CONTEXT_LLM_LOG_EVERY calls (default 25; 0 disables) so long runs are trackable.
+let llmCalls = 0
+let llmOk = 0
+export function llmCallStats(): { calls: number; ok: number } {
+  return { calls: llmCalls, ok: llmOk }
+}
+
 export class LlmExtractor implements KnowledgeExtractor {
   private readonly fetch: typeof fetch
   constructor(private readonly cfg: LlmExtractorConfig) {
@@ -53,6 +61,9 @@ export class LlmExtractor implements KnowledgeExtractor {
   }
 
   private async chat(system: string, user: string): Promise<string> {
+    llmCalls++
+    const every = Number(process.env.CONTEXT_LLM_LOG_EVERY ?? 25)
+    if (every > 0 && llmCalls % every === 0) console.error(`[llm] ${llmCalls} requests (${llmOk} ok)`)
     // A base URL (local vLLM/Ollama, e.g. http://localhost:8000) gets /v1/chat/completions
     // appended; a full endpoint that already ends in /chat/completions (e.g. Vertex AI's
     // OpenAI-compatible URL) is used verbatim.
@@ -77,7 +88,9 @@ export class LlmExtractor implements KnowledgeExtractor {
       }),
     })
     const body = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
-    return body.choices?.[0]?.message?.content ?? ""
+    const content = body.choices?.[0]?.message?.content ?? ""
+    if (content) llmOk++
+    return content
   }
 
   async extract(text: string): Promise<Extraction> {
