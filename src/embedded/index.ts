@@ -8,7 +8,7 @@ import { SqliteStore } from "./sqlite-store"
 import { SqliteGraphProvider } from "./sqlite-graph-provider"
 import { SqliteVecService } from "./sqlite-vec-service"
 import { LocalHashEmbeddings } from "./local-embeddings"
-import { TransformersEmbeddings, AutoEmbeddings } from "./transformers-embeddings"
+import { TransformersEmbeddings, AutoEmbeddings, resolveEmbedModel } from "./transformers-embeddings"
 import { Ingestor, type IngestDoc } from "./ingest"
 import { DeterministicExtractor, slugify, entityId, type KnowledgeExtractor } from "./extract"
 import { Authorizer } from "./authorizer"
@@ -103,12 +103,13 @@ export type { SearchTrace } from "./retrieval/trace"
 // CONTEXT_EMBEDDINGS: "auto" (default) = real semantic embeddings when transformers.js
 // can load, else the offline keyword-hash fallback; "real"/"transformers" = force real;
 // "hash"/"local" = force the deterministic hashing embedder (used by the test suite via
-// bunfig preload, so tests never download a model). CONTEXT_EMBED_MODEL overrides the model.
+// bunfig preload, so tests never download a model). Model selection: CONTEXT_EMBED_MODEL (a repo
+// id) wins, else CONTEXT_EMBED_PROFILE (fast|english-large|multilingual|on-device), else default.
 // NOTE: a given DB is tied to ONE embedder's vector space — don't switch embedders on an
 // existing DB (dims differ); reindex if you change modes.
 export function defaultEmbeddings(): EmbeddingProvider {
   const mode = (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()
-  const model = process.env.CONTEXT_EMBED_MODEL || undefined
+  const model = resolveEmbedModel()
   if (mode === "hash" || mode === "local") return new LocalHashEmbeddings()
   if (mode === "real" || mode === "transformers") return new TransformersEmbeddings(model)
   return new AutoEmbeddings(model)

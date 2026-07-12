@@ -6,6 +6,28 @@
 
 import type { EmbeddingProvider } from "../provider"
 
+// Recommended embedders by PROFILE, so a deployment upgrades with ONE env var and automatically
+// gets the right model + task-prefix + dim. The default (bge-small) is intentional and evidence-
+// based: on our conversational-memory benchmark a 2× larger dense model (bge-base) moved recall
+// <1% AND hurt ranking, at 2× latency - dense size is NOT the English-recall lever. But
+// multilingual / on-device deployments genuinely need a different model, which this makes a
+// one-liner. Explicit CONTEXT_EMBED_MODEL always wins over a profile.
+const EMBED_PROFILES: Record<string, string> = {
+  fast: "Xenova/bge-small-en-v1.5", // default — English, 384d, CPU-fast
+  "english-large": "Xenova/bge-base-en-v1.5", // 768d, marginal on our bench (kept for choice)
+  multilingual: "BAAI/bge-m3", // 1024d, 100+ languages, also emits learned-sparse (future signal)
+  "on-device": "onnx-community/embeddinggemma-300m", // 256d matryoshka, Gemma, on-device tuned
+}
+
+/** Resolve the embedding model: explicit CONTEXT_EMBED_MODEL, else a CONTEXT_EMBED_PROFILE
+ *  shortcut, else undefined (⇒ the TransformersEmbeddings default, bge-small). */
+export function resolveEmbedModel(): string | undefined {
+  const explicit = process.env.CONTEXT_EMBED_MODEL?.trim()
+  if (explicit) return explicit
+  const profile = process.env.CONTEXT_EMBED_PROFILE?.trim().toLowerCase()
+  return profile ? EMBED_PROFILES[profile] : undefined
+}
+
 // Asymmetric models need a TASK PREFIX that differs for queries vs documents.
 // EmbeddingGemma (the current best sub-500M model, +8 MTEB over bge-small) is the
 // headline case; symmetric models (bge/gte) get no prefix.
