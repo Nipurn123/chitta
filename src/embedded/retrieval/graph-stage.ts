@@ -5,6 +5,25 @@ import { embedQueryWith, type EmbeddingProvider } from "../../provider"
 import type { AccessibleMap, SearchResult } from "../../types"
 import { cosine } from "./passage"
 import { decodeF32 } from "../store/vector-blob"
+import { extractKnowledge } from "../extract"
+
+// Records that MENTION an entity NAMED IN THE QUERY - the entry point for multi-hop graph
+// retrieval. The dense signal seeds expansion from what it lexically matched; this seeds it
+// from the query's actual ENTITIES, so evidence reachable only through the typed graph (an
+// entity → a fact about it in another record) becomes findable. Read-only resolution (alias
+// lookup), ACL-filtered, so the query never mutates the graph and can't leak. Zero tokens.
+function queryEntitySeeds(query: string, store: SqliteStore, accMap: AccessibleMap): string[] {
+  const ids: string[] = []
+  for (const e of extractKnowledge(query).entities) {
+    const hit = store.entities.lookup(e.id)
+    if (hit) ids.push(hit.canonicalId)
+  }
+  if (ids.length === 0) return []
+  const rows = store.db
+    .query(`SELECT DISTINCT src FROM edges WHERE label = 'mentions' AND dst IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as Array<{ src: string }>
+  return rows.map((r) => r.src).filter((rid) => accMap[rid] != null) // ACL gate
+}
 
 export async function graphStage(
   graph: SqliteGraphProvider,
@@ -16,9 +35,13 @@ export async function graphStage(
   accMap: AccessibleMap,
 ): Promise<SearchResult[]> {
   const graphList: SearchResult[] = []
-  const seeds = [...new Set(dense.map((r) => r.metadata.recordId).filter(Boolean) as string[])]
+  // Seed the expansion from BOTH the dense results AND the query's named entities (the latter
+  // is what enables multi-hop). The query-seeded records are also candidates in their own right.
+  const denseSeeds = dense.map((r) => r.metadata.recordId).filter(Boolean) as string[]
+  const entitySeeds = queryEntitySeeds(query, store, accMap)
+  const seeds = [...new Set([...denseSeeds, ...entitySeeds])]
   if (seeds.length) {
-    const related = graph.getRelatedRecordIds(seeds, [...new Set(Object.values(accMap))], 5)
+    const related = [...new Set([...graph.getRelatedRecordIds(seeds, [...new Set(Object.values(accMap))], 5), ...entitySeeds])]
     if (related.length) {
       const q = await embedQueryWith(embeddings, query)
       const seen = new Set(dense.map((r) => r.metadata.virtualRecordId))
