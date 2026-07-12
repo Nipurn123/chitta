@@ -52,6 +52,10 @@ export function migrate(db: Database): void {
       embedding TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_org ON chunks(org_id);
+    -- ACL-first (filtered-ANN) dense search: when the accessible set is selective, we scan
+    -- EXACTLY the accessible chunks instead of an over-fetched global ANN. That needs a
+    -- virtual_record_id index so the scan is O(accessible), not O(all chunks).
+    CREATE INDEX IF NOT EXISTS idx_chunks_vid ON chunks(virtual_record_id);
   `)
   migrateEdges(db)
   // Confidence tier (Graphify EXTRACTED=1.0 / INFERRED≈0.8 / AMBIGUOUS≈0.5) - how

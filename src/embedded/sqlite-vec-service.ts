@@ -44,6 +44,17 @@ export class SqliteVecService implements VectorDBService {
       const allowedVids = filter.should?.["virtualRecordId"] as string[] | undefined
       const allowed = allowedSet ?? (allowedVids ? new Set(allowedVids) : undefined)
 
+      // FILTERED-ANN (ACORN / Filtered-DiskANN principle): when the ACL filter is SELECTIVE - the
+      // user can see only a bounded set - make the permission set the SEARCH SPACE. Scanning
+      // exactly those vectors is cheaper (O(accessible) via idx_chunks_vid) AND higher-recall
+      // (EXACT - no over-fetched global ANN that returns mostly-inaccessible rows and truncates the
+      // accessible ones). The permission gate stops being a post-filter and becomes the candidate
+      // generator. Above the threshold (e.g. an admin who sees everything) we keep the ANN path.
+      const ff = Number(process.env.CONTEXT_FILTER_FIRST_MAX ?? 2000)
+      if (dense && allowed && allowed.size > 0 && allowed.size <= ff) {
+        return { points: this.filteredExact(dense, mustOrg, allowed, limit) }
+      }
+
       // Try ANN (vec0 plaintext OR libSQL native DiskANN under encryption); fall back to
       // the fast BLOB brute-force when the index can't serve (missing / not yet built /
       // written by a non-vec store). Guarantees we never miss rows that exist in `chunks`.
@@ -84,6 +95,34 @@ export class SqliteVecService implements VectorDBService {
     }
     out.sort((a, b) => b.score - a.score)
     return out.slice(0, limit)
+  }
+
+  // FILTERED-ANN fast path: EXACT top-k over ONLY the accessible chunks. Bounded by |accessible|
+  // (fetched via idx_chunks_vid), so O(accessible) not O(all chunks) - and exact, so a scoped user
+  // never loses a relevant hit to ANN over-fetch truncation. IN-list is chunked under SQLite's
+  // variable cap. Same scoring (dot on unit-normalized vectors == cosine) as the other paths.
+  private filteredExact(dense: number[], mustOrg: string | undefined, allowed: ReadonlySet<string>, limit: number): VectorPoint[] {
+    const vids = [...allowed]
+    const q = normalize(dense)
+    const top = new TopK<{ point_id: string; content: string; vid: string; org: string }>(limit)
+    const CH = 900 // stay well under SQLite's default variable limit
+    for (let i = 0; i < vids.length; i += CH) {
+      const slice = vids.slice(i, i + CH)
+      const rows = this.store.db
+        .query(
+          `SELECT point_id, virtual_record_id, org_id, content, embedding FROM chunks WHERE virtual_record_id IN (${slice.map(() => "?").join(",")})`,
+        )
+        .all(...slice) as Array<{ point_id: string; virtual_record_id: string; org_id: string; content: string; embedding: Uint8Array | string }>
+      for (const c of rows) {
+        if (mustOrg != null && c.org_id !== mustOrg) continue
+        top.offer(dot(q, decodeF32(c.embedding)), { point_id: c.point_id, content: c.content, vid: c.virtual_record_id, org: c.org_id })
+      }
+    }
+    return top.values().map(({ score, value }) => ({
+      id: value.point_id,
+      score,
+      payload: { page_content: value.content, metadata: { virtualRecordId: value.vid, orgId: value.org } },
+    }))
   }
 
   // Fallback: scan in TS (portable, no extension needed) - but fast. Embeddings are read
