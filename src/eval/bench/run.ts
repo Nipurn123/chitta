@@ -26,7 +26,10 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
   // One reranker shared across cases (it caches the cross-encoder model after first load).
   const reranker = config.rerank ? new CrossEncoderReranker() : undefined
 
-  for (const c of cases) {
+  for (const c0 of cases) {
+    // Optional per-case question cap (cheap Tier-B iteration). History is always ingested
+    // in full; only the number of questions SCORED is capped.
+    const c = config.maxQuestions && config.maxQuestions > 0 ? { ...c0, questions: c0.questions.slice(0, config.maxQuestions) } : c0
     // Fresh, isolated memory per case - each case is an independent long history, and this
     // also proves the store starts clean (no cross-case leakage inflating recall).
     const ctx = buildEmbeddedContext({ path: ":memory:", reranker })

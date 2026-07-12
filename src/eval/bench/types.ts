@@ -12,6 +12,8 @@ export interface RunConfig {
   k: number
   /** cap on cases (subset iteration). */
   limitCases?: number
+  /** cap on questions PER CASE (cheap Tier-B iteration without burning the full set). */
+  maxQuestions?: number
   /** reported for reproducibility - a benchmark number is meaningless without its config. */
   embedder: string
   /** cross-encoder rerank of the fused candidate pool (improves ranking into the top-k). */

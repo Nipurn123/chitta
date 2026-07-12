@@ -133,6 +133,7 @@ async function main() {
         tier: llm ? tier : "a",
         k,
         limitCases: limit,
+        maxQuestions: arg("--max-q") ? Number(arg("--max-q")) : undefined,
         embedder: (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase(),
         rerank: has("--rerank"),
         answerModel: llm ? arg("--answer-model") ?? model : undefined,
