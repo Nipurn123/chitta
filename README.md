@@ -44,8 +44,18 @@
 ***Chitta*** (चित्त) - in Indian philosophy, the mind's storehouse where every impression is
 kept. Permission-aware **memory for AI agents**, by **[100xprompt](https://github.com/Nipurn123)**.
 
-Permission-aware **knowledge graph + vector memory**, shipped as a standalone **MCP server**.
-Any MCP client (Claude Code, 100xprompt, Claude Desktop, Cursor, IDEs) uses it via config - no code changes.
+Permission-aware **knowledge graph + vector memory** — usable as a standalone **MCP server** *or*
+an embeddable **SDK**. Any MCP client (Claude Code, 100xprompt, Claude Desktop, Cursor, IDEs) uses
+it via config; any Bun app uses it as a library.
+
+```ts
+import { Chitta } from "@100xprompt/chitta"
+const memory = new Chitta({ path: "./memory.db" })
+await memory.remember("Sarah works at Meta.", { relations: [{ from: "Sarah", to: "Meta", type: "works_at" }] })
+await memory.recall("where does Sarah work?")     // hybrid, reranked, ACL-filtered — zero LLM tokens
+```
+
+**→ Full SDK guide: [docs/SDK.md](docs/SDK.md)** (multi-tenant ACL, typed graph, self-correction, temporal, scaling flags).
 
 Point your AI assistant at it once, and every conversation can **store, recall, and reason over**
 your team's knowledge - with each user seeing only what their permissions allow.

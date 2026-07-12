@@ -1,6 +1,11 @@
 // Context layer - the permission-aware retrieval moat, ported natively to TS.
 // See ./README.md for the port provenance and what still plugs in behind the seams.
 
+// ── The Chitta SDK (the primary programmatic API): an ergonomic, in-process, permission-aware
+//    knowledge-graph + vector memory. `import { Chitta } from "@100xprompt/chitta"`. ──
+export { Chitta, ChittaUser } from "./sdk"
+export type { ChittaOptions, RememberOptions, Recalled, Entity, Relation } from "./sdk"
+
 export * from "./permission"
 export * from "./types"
 export * from "./provider"
