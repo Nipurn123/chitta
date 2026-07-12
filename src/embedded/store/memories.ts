@@ -40,6 +40,11 @@ export interface MemoryRow {
   occurred_at: number | null
   actor_ids: string
   confidence: number
+  use_count: number
+  last_used_at: number | null
+  /** Computed at read time by the recall methods (NOT a column): the blended
+   *  recency x frequency x importance score this row was ranked by. */
+  strength?: number
 }
 
 export type MemoryKind = "semantic" | "episodic" | "procedural"
@@ -66,6 +71,53 @@ export interface NewMemory {
   actorIds?: string[]
   /** Trust in this fact (0..1); drives confidence-aware belief revision. Default 1. */
   confidence?: number
+}
+
+// ── Usage-reinforced strength (testing effect / ACT-R activation) ────────────
+// Memories that get recalled AND used strengthen; unused ones decay. The retrieval
+// layer calls reinforce() with the ids it actually returned; the recall methods then
+// rank by strength = recency x frequency x importance:
+//   • recency   - exponential decay from the LAST time the memory was touched (used,
+//     or written/updated if never used), half-life CONTEXT_MEMORY_HALFLIFE_DAYS.
+//     Using a memory resets its clock - so an unused memory decays, a used one doesn't.
+//   • frequency - log-dampened use_count (the 10th recall matters less than the 2nd).
+//   • importance - the write-time confidence score (trust in the fact).
+// Ranking only - a weak memory is outranked, never deleted (same philosophy as the
+// record-level decay stage). CONTEXT_MEMORY_REINFORCE=0|false|off falls back to the
+// legacy write-recency order; usage is still TRACKED so re-enabling loses nothing.
+
+function reinforceOn(): boolean {
+  return !/^(0|false|off)$/i.test(process.env.CONTEXT_MEMORY_REINFORCE ?? "1")
+}
+
+function halflifeMs(): number {
+  return Math.max(1, Number(process.env.CONTEXT_MEMORY_HALFLIFE_DAYS ?? 30)) * 864e5
+}
+
+/** Blended strength of one memory row at time `now`. `baseTime` overrides the write-time
+ *  anchor (episodic rows anchor on EVENT time, not ingestion time). Exported so the
+ *  retrieval layer can blend the same score into semantic-similarity ranking. */
+export function memoryStrength(
+  r: Pick<MemoryRow, "updated_at" | "use_count" | "last_used_at" | "confidence">,
+  now = Date.now(),
+  halfLife = halflifeMs(),
+  baseTime?: number,
+): number {
+  const anchor = Math.max(baseTime ?? r.updated_at, r.last_used_at ?? 0)
+  const recency = Math.pow(0.5, Math.max(0, now - anchor) / halfLife)
+  const frequency = 1 + Math.log1p(r.use_count ?? 0)
+  const importance = Math.max(0, r.confidence ?? 1)
+  return recency * frequency * importance
+}
+
+/** Rank rows by strength (descending), attaching the computed score to each row. The SQL
+ *  ORDER BY stays as the deterministic base so the flag-off path is byte-identical to the
+ *  pre-reinforcement behavior. Stable sort: equal-strength rows keep the SQL order. */
+function rankByStrength(rows: MemoryRow[], now: number, eventTime?: (r: MemoryRow) => number): MemoryRow[] {
+  if (!reinforceOn() || rows.length === 0) return rows
+  const hl = halflifeMs()
+  for (const r of rows) r.strength = memoryStrength(r, now, hl, eventTime?.(r))
+  return rows.sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0))
 }
 
 export class MemoryRepo {
@@ -137,6 +189,19 @@ export class MemoryRepo {
     this.db.query("UPDATE memories SET updated_at = ? WHERE id = ?").run(Date.now(), id)
   }
 
+  /** Usage reinforcement: mark memories as just-recalled-and-used (bump frequency, reset
+   *  the usage clock). Caller = the retrieval layer, with the ids it actually RETURNED -
+   *  not everything it scanned - so only surfaced memories strengthen. Deliberately does
+   *  NOT touch updated_at: belief time (the version chain) and usage time are separate
+   *  axes, and reinforcement must never look like a belief revision. Returns rows affected. */
+  reinforce(ids: string[], now = Date.now()): number {
+    if (ids.length === 0) return 0
+    const res = this.db
+      .query(`UPDATE memories SET use_count = use_count + 1, last_used_at = ? WHERE id IN (${ph(ids.length)})`)
+      .run(now, ...ids)
+    return Number(res.changes)
+  }
+
   /** Forget memories by id (soft-delete with a reason). Returns rows affected. */
   forget(ids: string[], reason: string): number {
     if (ids.length === 0) return 0
@@ -160,10 +225,12 @@ export class MemoryRepo {
 
   /** Current memories the caller may see: ACL-scoped to the accessible vids, latest
    *  version only, not forgotten, not expired. The gate-first ACL filter - leak-proof
-   *  by construction (an inaccessible vid is never in the IN-list). */
+   *  by construction (an inaccessible vid is never in the IN-list). Ranked by usage
+   *  strength (recency x frequency x importance; see memoryStrength) so a memory that
+   *  keeps getting used outranks an equally-current one nobody touches. */
   recall(accessibleVids: string[], now = Date.now()): MemoryRow[] {
     if (accessibleVids.length === 0) return []
-    return this.db
+    const rows = this.db
       .query(
         `SELECT * FROM memories
          WHERE virtual_record_id IN (${ph(accessibleVids.length)})
@@ -172,14 +239,17 @@ export class MemoryRepo {
          ORDER BY updated_at DESC`,
       )
       .all(...accessibleVids, now) as MemoryRow[]
+    return rankByStrength(rows, now)
   }
 
-  /** Episodic memories the caller may see (time-anchored experiences), newest EVENT first.
-   *  Not versioned/deduped like facts - each episode is a distinct experience; the caller
-   *  ranks by relevance × recency (it holds the query embedding). ACL-scoped like recall. */
+  /** Episodic memories the caller may see (time-anchored experiences), strongest first
+   *  (EVENT-time recency x usage frequency x importance - an episode anchors on when it
+   *  HAPPENED, not when it was ingested). Not versioned/deduped like facts - each episode
+   *  is a distinct experience; the caller further ranks by relevance x recency (it holds
+   *  the query embedding). ACL-scoped like recall. */
   recallEpisodes(accessibleVids: string[], now = Date.now()): MemoryRow[] {
     if (accessibleVids.length === 0) return []
-    return this.db
+    const rows = this.db
       .query(
         `SELECT * FROM memories
          WHERE virtual_record_id IN (${ph(accessibleVids.length)})
@@ -188,12 +258,14 @@ export class MemoryRepo {
          ORDER BY COALESCE(occurred_at, created_at) DESC`,
       )
       .all(...accessibleVids, now) as MemoryRow[]
+    return rankByStrength(rows, now, (r) => r.occurred_at ?? r.created_at)
   }
 
-  /** Procedural memories the caller may see (learned how-tos / preferences), current only. */
+  /** Procedural memories the caller may see (learned how-tos / preferences), current
+   *  only, strongest first - a how-to the agent keeps reaching for outranks a stale one. */
   recallProcedures(accessibleVids: string[], now = Date.now()): MemoryRow[] {
     if (accessibleVids.length === 0) return []
-    return this.db
+    const rows = this.db
       .query(
         `SELECT * FROM memories
          WHERE virtual_record_id IN (${ph(accessibleVids.length)})
@@ -202,6 +274,7 @@ export class MemoryRepo {
          ORDER BY updated_at DESC`,
       )
       .all(...accessibleVids, now) as MemoryRow[]
+    return rankByStrength(rows, now)
   }
 
   /** Whether an episode with this subject_key already exists for a record - so re-ingesting

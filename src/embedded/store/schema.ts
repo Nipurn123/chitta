@@ -63,6 +63,7 @@ export function migrate(db: Database): void {
   const ecols = (db.query("PRAGMA table_info(edges)").all() as Array<{ name: string }>).map((c) => c.name)
   if (!ecols.includes("confidence")) db.exec("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
   migrateMemories(db)
+  migrateWorkingMemory(db)
   migrateAudit(db)
   migrateEntityAliases(db)
 }
@@ -116,7 +117,9 @@ export function migrateMemories(db: Database): void {
       relation TEXT,
       source_record_id TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      use_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_memories_acl ON memories(virtual_record_id, is_latest, is_forgotten);
     CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject_key, is_latest);
@@ -139,8 +142,39 @@ export function migrateMemories(db: Database): void {
   // relation's confidence). A newer functional fact only SUPERSEDES the current one when it
   // is at least as confident - a low-confidence claim can't overwrite a high-confidence belief.
   if (!mcols.includes("confidence")) db.exec("ALTER TABLE memories ADD COLUMN confidence REAL NOT NULL DEFAULT 1")
+  // Usage reinforcement (retrieval strengthens a trace): `use_count` / `last_used_at`
+  // record how often and how recently a memory was actually RECALLED AND USED, so recall
+  // ranking can blend recency x frequency x importance (see memoryStrength in memories.ts).
+  // A memory that keeps proving useful stays vivid; one nobody touches fades - it is
+  // never deleted, only outranked. Added idempotently so existing DBs upgrade in place
+  // (fresh DBs get the columns from the CREATE TABLE above and skip the ALTERs).
+  if (!mcols.includes("use_count")) db.exec("ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
+  if (!mcols.includes("last_used_at")) db.exec("ALTER TABLE memories ADD COLUMN last_used_at INTEGER")
   db.exec("CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind, virtual_record_id, is_forgotten)")
   db.exec("CREATE INDEX IF NOT EXISTS idx_memories_occurred ON memories(occurred_at)")
+}
+
+// The WORKING-MEMORY table - the session-scoped scratchpad tier (see working-memory.ts).
+// Ephemeral by design: items live outside the memories table so session chatter can never
+// leak into long-term recall. consolidate() promotes the salient few into `memories` and
+// hard-DELETES the rest (unlike long-term forgetting, which is soft) - working memory is
+// a buffer, not a record. `repeat_count` / `ref_count` / `important` are the deterministic
+// salience signals consolidation reads; `last_seen_at` drives whole-session TTL expiry.
+export function migrateWorkingMemory(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS working_memory (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      important INTEGER NOT NULL DEFAULT 0,
+      repeat_count INTEGER NOT NULL DEFAULT 1,
+      ref_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wm_session ON working_memory(session_id, last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_wm_stale ON working_memory(last_seen_at);
+  `)
 }
 
 // The edges table is a property-graph relation store shared by ACL (permissions/

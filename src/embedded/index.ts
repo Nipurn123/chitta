@@ -275,6 +275,8 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     const qv = await (embeddings.embedQuery ? embeddings.embedQuery(query) : embeddings.embedDense(query))
     const scored = rows.map((r) => ({ r, s: r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) : 0 }))
     scored.sort((a, b) => b.s - a.s)
+    // usage reinforcement: what gets recalled gets stronger (recency x frequency x importance)
+    store.memories.reinforce(scored.slice(0, limit).map(({ r }) => r.id))
     return scored.slice(0, limit).map(({ r }) => ({
       memory: r.memory, version: r.version, isStatic: !!r.is_static, updatedAt: r.updated_at, rootId: r.root_id ?? r.id,
     }))
@@ -301,6 +303,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
       })
       .filter((x) => x.rel >= floor)
     scored.sort((a, b) => b.s - a.s)
+    store.memories.reinforce(scored.slice(0, limit).map(({ r }) => r.id)) // recalled ⇒ reinforced
     return scored.slice(0, limit).map(({ r }) => ({
       event: r.memory,
       occurredAt: r.occurred_at ?? r.created_at,
@@ -321,6 +324,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
       .map((r) => ({ r, s: r.embedding ? cosine(qv, decodeF32(r.embedding) as unknown as number[]) : 0 }))
       .filter((x) => x.s >= floor)
     scored.sort((a, b) => b.s - a.s)
+    store.memories.reinforce(scored.slice(0, limit).map(({ r }) => r.id)) // recalled ⇒ reinforced
     return scored.slice(0, limit).map(({ r }) => ({ procedure: r.memory, version: r.version }))
   }
 
