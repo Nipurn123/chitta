@@ -36,6 +36,18 @@ export interface ImpactResult {
   records: string[]
   connectedEntities: Array<{ label: string; relation: string }>
 }
+/** One typed assertion of a principal's belief set, rendered readable. */
+export interface Belief {
+  from: string
+  type: string
+  to: string
+}
+export interface BeliefDiffResult {
+  /** Typed beliefs A can see that B cannot. */
+  aOnly: Belief[]
+  /** Typed beliefs B can see that A cannot. */
+  bOnly: Belief[]
+}
 
 export class GraphQueryService {
   constructor(private readonly graph: SqliteGraphProvider) {}
@@ -152,5 +164,46 @@ export class GraphQueryService {
   async toCypher(userId: string, orgId: string): Promise<string> {
     const { entities, relations, byId } = await this.scope(userId, orgId)
     return renderCypher(entities, relations, byId)
+  }
+
+  // ── PERSPECTIVES - compare what different principals can see over the SAME graph ──
+
+  // A principal's BELIEF SET: every live typed relation in their ACL-scoped subgraph,
+  // keyed by entity ids (stable identity) and rendered with labels. Symmetric
+  // "relates_to" co-occurrence is excluded - graph signal, not an asserted fact (the
+  // same line the memory layer draws at consolidation). The ACL invariant is inherited
+  // from scope(): its per-edge provenance guard means a relation is in the set ONLY if
+  // a record this principal may access asserted it - endpoint visibility is not enough.
+  private beliefSet(g: ScopedGraph): Map<string, Belief> {
+    const label = (id: string) => g.byId.get(id)?.label ?? id
+    const set = new Map<string, Belief>()
+    for (const r of g.relations) {
+      if (r.type === "relates_to") continue
+      set.set(`${r.from}|${r.type}|${r.to}`, { from: label(r.from), type: r.type, to: label(r.to) })
+    }
+    return set
+  }
+
+  /** PERSPECTIVE DIFF - the typed beliefs principal A can see that B cannot (`aOnly`),
+   *  and vice versa (`bOnly`). Each side is that principal's OWN ACL scope, so a private
+   *  fact shows up exactly once, on its owner's side. "What does the planner know that
+   *  the critic doesn't" - the query that makes multi-agent memory inspectable. */
+  async beliefDiff(principalA: string, principalB: string, orgId: string): Promise<BeliefDiffResult> {
+    const [a, b] = await Promise.all([this.scope(principalA, orgId), this.scope(principalB, orgId)])
+    const setA = this.beliefSet(a)
+    const setB = this.beliefSet(b)
+    return {
+      aOnly: [...setA].filter(([k]) => !setB.has(k)).map(([, v]) => v),
+      bOnly: [...setB].filter(([k]) => !setA.has(k)).map(([, v]) => v),
+    }
+  }
+
+  /** SHARED BELIEFS - the typed relations EVERY listed principal can see (the
+   *  intersection of their ACL-scoped belief sets): an agent team's common ground. */
+  async sharedBeliefs(principals: string[], orgId: string): Promise<Belief[]> {
+    if (principals.length === 0) return []
+    const sets = await Promise.all(principals.map(async (p) => this.beliefSet(await this.scope(p, orgId))))
+    const [first, ...rest] = sets
+    return [...first].filter(([k]) => rest.every((s) => s.has(k))).map(([, v]) => v)
   }
 }

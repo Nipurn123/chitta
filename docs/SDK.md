@@ -1,6 +1,6 @@
 # Chitta SDK
 
-**Zero-token**, local knowledge-graph + vector memory for AI agents - permanent memory that persists across sessions, in-process, no servers to run. Chitta runs on **Bun** (it uses `bun:sqlite`), stores everything in a single SQLite file, and never spends an LLM token to remember or retrieve. It's permission-aware from the same engine, too, so the identical store scales from a single agent to a whole team once you need that - see "Multi-tenant / per-user ACL" below.
+**Zero-token**, local knowledge-graph + vector memory for AI agents - permanent memory that persists across sessions, in-process, no servers to run. Chitta runs on **Bun** (it uses `bun:sqlite`), stores everything in a single SQLite file, and never spends an LLM token to remember or retrieve. It's permission-aware from the same engine, too, so the identical store scales from a single agent to a whole team once you need that - see "Multi-tenant / per-user ACL" and "Multi-agent memory" below.
 
 ```bash
 bun add @100xprompt/chitta
@@ -73,6 +73,39 @@ await alice.recall("budget")  // → sees Bob's, because he shared it
 
 `shareWithOrg: true` on `remember` makes a memory visible org-wide.
 
+## Multi-agent memory (perspectives)
+
+Agent teams need what human teams do: **one shared store, per-principal visibility**. Chitta gets this for free, because an agent is just a principal - `memory.agent(id)` gives every agent its own ACL-scoped view over the shared graph. This is not new machinery; it is the multi-tenant ACL above applied to agents. Agent ids are **namespaced** (`"planner"` → principal `agent:planner`), so an agent and a human with the same name never collide.
+
+```ts
+const planner = memory.agent("planner")
+const critic  = memory.agent("critic")
+memory.team("research", { agents: [planner, critic] }) // an agent group (principal "team:research")
+
+await planner.remember("Draft: rollout targets March 3.")                // private to planner (default)
+await critic.remember("Note for the planner.", { shareWith: [planner] })  // direct grant (agent or user)
+await planner.remember("Corpus lives at s3://corpus-v2.", { shareWithTeam: "research" })  // the whole team
+
+await critic.recall("rollout")  // → [] - planner's draft stays private
+```
+
+`shareWithTeam` respects the same no-over-sharing rule users get: a non-admin agent can only grant to a team it belongs to.
+
+### Perspective queries
+
+Each agent's graph view is provenance-filtered (a relation is visible only if a record that agent may access asserted it), so comparing perspectives is a set operation over typed triples:
+
+```ts
+await memory.perspectives.diff(planner, critic)
+// → { aOnly: [{ from, type, to }, ...], bOnly: [...] }
+//   aOnly = what planner can see that critic cannot; bOnly = the reverse
+
+await memory.perspectives.shared([planner, critic])
+// → the typed facts EVERY listed principal can see - the team's common ground
+```
+
+Both accept handles (`planner`) or raw principal ids (`"agent:planner"`, `"alice"`) - humans and agents mix freely in the same store and the same queries.
+
 ## Temporal (bi-temporal)
 
 ```ts
@@ -119,4 +152,7 @@ The full low-level engine is always available at `memory.ctx` - episodic/procedu
 | `timeline(subject)` / `asOf(t, subject?)` | Bi-temporal views. |
 | `graph.{neighbors, related, pathBetween, central, communities}` | Graph queries (ACL-scoped). |
 | `user(id, {role?, org?, groups?})` | Per-user scoped client (multi-tenant ACL). |
+| `agent(id, {role?, org?, teams?})` | Per-agent scoped client (principal `agent:<id>`); its `remember` adds `shareWithTeam`. |
+| `team(id, {agents})` | Provision an agent group (principal `team:<id>`) with shared visibility. |
+| `perspectives.diff(a, b)` / `.shared([...])` | Belief diff / intersection between principals' ACL-scoped views. |
 | `about()` | Store stats + engine info. `close()` shuts the DB. |
