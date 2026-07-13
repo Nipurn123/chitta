@@ -8,6 +8,21 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.5.0] - 2026-07-13
+
+The launch release: the whole 0.4.x line - repository learning (`chitta learn`), the visible
+graph (`chitta graph --open`), usage-reinforced + working memory, multi-agent perspectives,
+million-vector scale, and the MCP intelligence surface - consolidated, field-tested on real
+multi-thousand-file repositories, plus one CLI fix.
+
+### Fixed
+- **`chitta query` could read the wrong database.** `learn` / `graph` / `doctor` default to the
+  personal store, but `query` defaulted to `./context.db` in the working directory (and org
+  `org1`) - so a bare `chitta query "..."` right after `chitta learn .` silently found nothing.
+  Every command now resolves **one** store (`--db`, else `$CONTEXT_DB`, else the personal
+  store), `--db` is honored uniformly (including by `learn`/`graph`), and `query` defaults to
+  the personal identity. So `chitta learn .` then `chitta query "..."` just works, no flags.
+
 ## [0.4.2] - 2026-07-13
 
 ### Fixed

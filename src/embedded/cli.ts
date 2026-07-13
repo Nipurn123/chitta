@@ -33,7 +33,14 @@ async function loadBenchDataset(name: string, opts: { path?: string; limit?: num
 
 async function main() {
   const cmd = process.argv[2]
-  const dbPath = arg("--db", process.env.CONTEXT_DB ?? "context.db")!
+  // ONE store resolution for EVERY command. --db (explicit) wins, else $CONTEXT_DB, else the
+  // personal store the MCP server serves. Folding --db into CONTEXT_DB here makes the
+  // personalContext-based commands (doctor/learn/graph/sleep) honor --db too, so `learn`,
+  // `query` and `graph` can never again land in different databases (the footgun where a bare
+  // `chitta query` looked at ./context.db while `learn` wrote to the personal store).
+  const dbFlag = arg("--db")
+  if (dbFlag) process.env.CONTEXT_DB = dbFlag
+  const dbPath = process.env.CONTEXT_DB ?? (await import("./personal")).personalContextPath()
 
   // rekey runs BEFORE opening the store (it manages its own old/new-key handles).
   if (cmd === "rekey") {
@@ -249,10 +256,14 @@ async function main() {
       break
     }
     case "query": {
+      // Default to the personal identity (local-user/local-org) so a bare
+      // `chitta query "..."` recalls what `chitta learn` / the MCP server stored, with no
+      // flags. Pass --user/--org for multi-tenant stores.
+      const id = (await import("./personal")).identity()
       const res = await ctx.retrieval.searchWithFilters({
         queries: [process.argv[3]],
-        userId: arg("--user")!,
-        orgId: arg("--org", "org1")!,
+        userId: arg("--user") ?? id.userId,
+        orgId: arg("--org") ?? id.orgId,
         limit: Number(arg("--limit", "5")),
       })
       console.log(`status: ${res.status}`)
