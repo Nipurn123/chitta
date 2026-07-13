@@ -11,12 +11,12 @@ and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per 
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-369%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-382%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
 
-**[Install](#install)** · **[See it remember](#see-it-remember-30-seconds)** · **[Benchmarks](#benchmarks--performance)** · **[SDK](docs/SDK.md)** · **[Architecture](ARCHITECTURE.md)** · **[vs mem0 / Zep](#how-chitta-compares)**
+**[Install](#install)** · **[See it remember](#see-it-remember-30-seconds)** · **[Ask locally](#ask-your-memory-one-cited-answer-fully-local)** · **[Benchmarks](#benchmarks--performance)** · **[SDK](docs/SDK.md)** · **[Architecture](ARCHITECTURE.md)** · **[vs mem0 / Zep](#how-chitta-compares)**
 
 <a href="docs/assets/chitta-graph.mp4"><img src="docs/assets/chitta-graph.gif" width="640" alt="Chitta knowledge graph - a rotating 3D constellation of concepts, colored by type and linked by relationships"/></a>
 
@@ -72,6 +72,7 @@ or import it as an embeddable **SDK**.
 | 📉 **Up to 143× less context** | Hands your agent the ~181 tokens that matter instead of dumping 25,864 into the prompt (measured on LoCoMo; grows with your corpus). |
 | 🕸️ **A mind you can see** | Every fact becomes typed entities + relations. `chitta graph --open` renders your agent's memory as an interactive constellation. |
 | 🧬 **Self-correcting** | "Sarah moved to Meta" supersedes "works at Google" - confidence-aware belief revision, contradiction detection, history kept. No LLM involved. |
+| 💬 **Answers, not just snippets** | `chitta ask "…"` returns **one direct, cited answer** - phrased by a tiny LLM running *inside the process* (no Ollama, no server, no API key). It reads only your memory and says *"I don't have that in memory"* rather than hallucinate. |
 | ⏳ **Reasons over time** | Bi-temporal store: how a subject *evolved*, and exactly what was believed **as of** any past date. |
 | 🔒 **Permission-aware to the core** | The ACL decides the candidate set *before* the vector index is touched. One shared graph, per-user visibility, leak-proof by construction. |
 | 🛠️ **One command, 17 tools** | Installs as an MCP server + Skill into Claude Code, Cursor, Codex, Windsurf, Zed and more - or import the SDK directly. |
@@ -82,6 +83,7 @@ import { Chitta } from "@100xprompt/chitta"
 const memory = new Chitta({ path: "./memory.db" })
 await memory.remember("Sarah works at Meta.", { relations: [{ from: "Sarah", to: "Meta", type: "works_at" }] })
 await memory.recall("where does Sarah work?")     // hybrid, reranked, local - zero LLM tokens
+await memory.ask("where does Sarah work?")        // optional: ONE cited answer, tiny in-process LLM
 ```
 
 **→ Full SDK guide: [docs/SDK.md](docs/SDK.md)** (multi-tenant ACL, typed graph, self-correction, temporal, scaling flags).
@@ -173,6 +175,46 @@ Chitta learned this repository
 Real run, this repo. Then ask your agent *"where is the security invariant enforced?"* -
 today or in three weeks - and it answers from this graph. Re-running supersedes each file's
 contribution (stable ids), so `chitta learn .` after a refactor just updates what changed.
+
+## Ask your memory (one cited answer, fully local)
+
+`query` gives you ranked snippets. **`ask` gives you the answer** - phrased by a tiny LLM that
+runs **inside the process** (llama.cpp bindings - no Ollama, no server, no API key, works on any
+laptop). Retrieval stays exactly what it is: zero-token graph + facts + hybrid search. The model
+never answers from its own pretraining - it only reads the numbered notes retrieval hands it,
+cites them, and **refuses when memory has nothing**:
+
+```bash
+$ chitta ask "Who is the president of SpaceX?"
+Gwynne Shotwell is the president of SpaceX.
+
+  grounded on 8 notes · Qwen2.5-0.5B (in-process) · 3.2s
+
+$ chitta ask "What is the capital of Mongolia?"
+I don't have that in memory.
+```
+
+Real runs. The second one is the point: the model certainly "knows" Ulaanbaatar - but it is not
+in *your memory*, so Chitta says so instead of hallucinating an answer it can't cite.
+
+- **Zero setup.** First `ask` downloads the default model once (Qwen2.5-0.5B instruct, ~0.4 GB) -
+  or prime everything at install time with **`chitta warm`**. After that the CLI answers in ~2-3 s,
+  and SDK repeat asks run in **~0.5 s** (the weights stay loaded in-process).
+- **Bring any model.** `CONTEXT_LLM_URL` points `ask` at any OpenAI-compatible endpoint
+  (Ollama, LM Studio, vLLM, a cloud model) - `--model <gguf path|url>` swaps the local model.
+- **Stay zero-LLM if you want.** `chitta ask --no-llm` prints the numbered, provenance-tagged
+  notes the model would have read. Retrieval never spends a token either way.
+
+```ts
+const r = await memory.ask("where does Sarah work?")   // SDK: same three-line story
+r.answer                                               // "Sarah works at Meta [1]."
+r.sources                                              // the notes it cited: kind, text, provenance
+```
+
+Honest sizing: a 0.5B model is superb at *phrasing retrieved facts* (that is the whole job here)
+and it inherits Chitta's belief revision - ask where someone lives after they moved and it states
+the current truth. It is not a reasoning engine; for tricky synthesis point `CONTEXT_LLM_URL` at
+a bigger model and `ask` uses it automatically.
 Also on the SDK: `await memory.learn("./my-repo")`.
 
 ## The team moat: permission-aware in 30 seconds
@@ -289,7 +331,9 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 ```bash
 chitta doctor                      # config + health: identity, encryption, ANN, audit, counts
+chitta warm                        # pre-download every lazy model (embedder, reranker, ask) - then everything is instant
 chitta learn . --open              # walk a repo → permanent memory (code graph + concepts) + report
+chitta ask "who runs billing?"     # ONE direct, cited answer via the in-process local LLM (--no-llm for notes only)
 chitta graph --open                # → a self-contained interactive HTML of everything your agent remembers
 chitta sleep                       # sleep-time consolidation: dedupe entities, retire expired, re-weight
 chitta bench synthetic             # measure memory quality (retrieval + end-to-end QA) - see docs/BENCHMARKING.md

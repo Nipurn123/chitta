@@ -1,8 +1,9 @@
 {
   "name": "@100xprompt/chitta",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "node-llama-cpp": "^3.19.0",
     "sqlite-vec": "^0.1.9",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "0.24.7"
@@ -53,7 +54,9 @@
     "permission-aware",
     "rbac",
     "access-control",
-    "ai-agents"
+    "ai-agents",
+    "local-llm",
+    "offline-ai"
   ],
   "license": "MIT",
   "publishConfig": {

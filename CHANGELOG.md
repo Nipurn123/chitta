@@ -8,6 +8,40 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.7.0] - 2026-07-13
+
+### Added
+- **`chitta ask "question"` - one direct, cited answer, fully local.** Retrieval stays the
+  zero-token pipeline (typed-graph exact answer + belief-revised facts + hybrid search); a tiny
+  LLM running **inside the process** (llama.cpp bindings - no Ollama, no server, no API key) only
+  phrases those notes and cites them as `[n]`. When memory has nothing relevant it answers
+  *"I don't have that in memory"* - the model is never allowed to answer from its own
+  pretraining, and it is not invoked at all on an empty result. The default model
+  (Qwen2.5-0.5B instruct, ~0.4 GB) downloads once on first use; `--model <gguf path|url>` /
+  `CONTEXT_ASK_MODEL` swap it, `CONTEXT_LLM_URL` routes `ask` to any OpenAI-compatible endpoint
+  (Ollama, LM Studio, vLLM, cloud), and `--no-llm` prints the numbered notes with provenance
+  instead. Measured: CLI answer in ~2-3 s; SDK repeat asks ~0.5 s (weights stay loaded).
+- **SDK `memory.ask(question)`** - same answer layer for programs: returns
+  `{ answer, sources, synthesized, model }`, streams via `onToken`, keeps the model warm across
+  calls. `AskResult` / `AskNote` types exported.
+- **`chitta warm`** - pre-download every lazy model in one command (embedder, reranker, ask
+  model) with per-step timings, so first use is instant. Idempotent.
+- `chitta doctor` now reports the ask layer: remote endpoint, local model ready, or
+  "downloads on first ask".
+
+### Changed
+- **SDK single-user identity is now `local-user` / `local-org`** - the same identity the CLI and
+  the MCP server use - so one store opened from any surface (SDK, `chitta` CLI, Claude's MCP
+  tools) reads and writes the SAME memory. Before 0.7.0 the SDK default was `me`/`default-org`;
+  stores written under that identity remain readable via `.user("me", { org: "default-org" })`.
+
+### Fixed
+- **Embedder drift now heals on READ, not only on ingest.** A store built with real embeddings
+  but opened by an install where transformers can't load (or vice versa) reindexes itself to the
+  active embedder on the first query/recall - previously the first *ingest* healed it but a
+  read-only session silently searched a mismatched vector space. The heal also warns on stderr
+  even when no logger is configured.
+
 ## [0.6.0] - 2026-07-13
 
 ### Changed

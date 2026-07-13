@@ -11,12 +11,15 @@ import { buildEmbeddedContext, type EmbeddedContext } from "./embedded/index"
 import { LocalHashEmbeddings } from "./embedded/local-embeddings"
 import { AutoEmbeddings, TransformersEmbeddings } from "./embedded/transformers-embeddings"
 import { CrossEncoderReranker } from "./embedded/reranker"
+import { LOCAL_USER, LOCAL_ORG } from "./embedded/personal"
 import type { Role } from "./embedded/authorizer"
 import type { Belief, BeliefDiffResult } from "./embedded/graph-query"
+import type { AskResult } from "./embedded/answer"
 import type { EmbeddingProvider } from "./provider"
 import { ConfigError } from "./errors"
 
 export type { Belief, BeliefDiffResult } from "./embedded/graph-query"
+export type { AskResult, AskNote } from "./embedded/answer"
 
 export interface ChittaOptions {
   /** SQLite file path. ":memory:" (default) is ephemeral; a real path persists across runs. */
@@ -197,6 +200,25 @@ export class ChittaUser {
     return this.ctx.recall(query, this.userId, this.orgId)
   }
 
+  /** Ask memory a question and get ONE direct, cited answer instead of a snippet list.
+   *  Retrieval is the same zero-token pipeline as `recall`; only the final phrasing uses a
+   *  model - a tiny in-process GGUF by default (auto-downloaded once, then kept loaded so
+   *  repeat asks are sub-second), or any OpenAI-compatible endpoint via CONTEXT_LLM_URL.
+   *  `sources` lists the notes the answer cites as [n]. When memory has nothing relevant,
+   *  it says so honestly and no model is invoked. */
+  async ask(question: string, opts: { model?: string; limit?: number; onToken?: (t: string) => void } = {}): Promise<AskResult> {
+    const t0 = this.onEvent ? performance.now() : 0
+    const { resolveAnswerer, answerFromMemory } = await import("./embedded/answer")
+    const a = await resolveAnswerer({ model: opts.model })
+    const res = await answerFromMemory(this.ctx, this.userId, this.orgId, question, a.generate, {
+      model: a.label,
+      limit: opts.limit,
+      onToken: opts.onToken,
+    })
+    this.emit("ask", t0, res.sources.length)
+    return res
+  }
+
   /** Forget memories matching a query. Non-destructive - history is kept; current recall excludes them. */
   forget(query: string, reason = "forgotten via SDK"): Promise<string[]> {
     return this.ctx.forgetMemories(query, this.userId, this.orgId, reason)
@@ -273,7 +295,7 @@ export class Chitta {
 
   constructor(opts: ChittaOptions = {}) {
     validateOptions(opts)
-    this.org = opts.org ?? "default-org"
+    this.org = opts.org ?? LOCAL_ORG
     this.onEvent = opts.onEvent
     this.ctx = buildEmbeddedContext({
       path: opts.path ?? ":memory:",
@@ -347,9 +369,13 @@ export class Chitta {
     }
   }
 
-  // ── single-user convenience: a default admin "me" ──
+  // ── single-user convenience: a default admin identity ──
+  // Same identity the CLI and the MCP server use (local-user/local-org), so one store
+  // opened from any surface - SDK, `chitta` CLI, Claude's MCP tools - reads/writes the
+  // SAME memory. (Before 0.7.0 the SDK defaulted to me/default-org; stores written under
+  // that identity are still readable via `.user("me", { org: "default-org" })`.)
   private me(): ChittaUser {
-    return (this.meCache ??= this.user("me", { role: "admin" }))
+    return (this.meCache ??= this.user(LOCAL_USER, { role: "admin" }))
   }
   /** Store something durable (single-user). */
   remember(text: string, opts?: RememberOptions) {
@@ -366,6 +392,10 @@ export class Chitta {
   /** Current atomic facts for a query (single-user). */
   facts(query: string, opts?: { limit?: number }) {
     return this.me().facts(query, opts)
+  }
+  /** Ask memory a question - one direct, cited answer via a local model (single-user). */
+  ask(question: string, opts?: { model?: string; limit?: number; onToken?: (t: string) => void }) {
+    return this.me().ask(question, opts)
   }
   /** Forget matching memories (single-user, non-destructive). */
   forget(query: string, reason?: string) {

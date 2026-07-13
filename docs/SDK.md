@@ -24,6 +24,21 @@ memory.close()
 
 `recall` runs the full **hybrid** pipeline - vector + keyword (BM25) + graph, fused with RRF, cross-encoder reranked, ACL-filtered - and returns ranked, cited snippets. No LLM in the loop.
 
+## Ask (one cited answer, fully local)
+
+When you want **the answer** instead of ranked snippets, `ask` runs the same zero-token retrieval and hands the notes to a tiny LLM running **inside your process** (llama.cpp bindings - no Ollama, no server, no API key):
+
+```ts
+const r = await memory.ask("when do we launch?")
+r.answer      // "The launch is scheduled for March 3rd [1]."
+r.sources     // the numbered notes it cited: { n, kind: "graph"|"fact"|"snippet", text, name? }
+r.synthesized // false ⇒ memory had nothing relevant and NO model was invoked
+```
+
+- The default model (Qwen2.5-0.5B instruct, ~0.4 GB) downloads once on first use, then **stays loaded** - repeat asks run in ~0.5 s. Stream with `onToken`, cap grounding with `limit`, swap models with `{ model: "<gguf path|url>" }`.
+- Set `CONTEXT_LLM_URL` (plus `CONTEXT_LLM_MODEL` / `CONTEXT_LLM_KEY`) and `ask` uses any OpenAI-compatible endpoint instead - Ollama, LM Studio, vLLM, or a cloud model.
+- The model is instructed to use **only** the retrieved notes and to say *"I don't have that in memory"* otherwise - and on an empty retrieval it is never called at all. Grounded by construction, belief-revised by inheritance (superseded facts never reach the prompt).
+
 ## Precise, zero-token knowledge graph
 
 You (or your agent) already read the text - so pass the entities and relations you saw. Chitta stores them as **typed triples**: no second model re-reads anything, and the graph answers relational questions exactly.
@@ -146,6 +161,7 @@ The full low-level engine is always available at `memory.ctx` - episodic/procedu
 |---|---|
 | `remember(text, opts?)` | Store durable memory; returns `{ id }` (pass `id` back to update). |
 | `recall(query, {limit?})` | Ranked, cited snippets (hybrid, reranked, ACL-filtered). |
+| `ask(question, {model?, limit?, onToken?})` | ONE direct, cited answer via an in-process local LLM (or `CONTEXT_LLM_URL`). |
 | `facts(query, {limit?})` | Current atomic facts (self-correcting). |
 | `forget(query, reason?)` | Non-destructive forget (history kept). |
 | `profile(subject)` | Static + recent facts + neighborhood for an entity. |

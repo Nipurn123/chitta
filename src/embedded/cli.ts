@@ -87,6 +87,7 @@ async function main() {
       : embReal
         ? `real semantic - ${process.env.CONTEXT_EMBED_MODEL || "bge-small"} (downloads once)`
         : "hash FALLBACK - real embeddings unavailable; run: bun add @huggingface/transformers"
+    const askSt = (await import("./answer")).askStatus()
     const lines = [
       "Chitta - configuration & health\n",
       `  identity     user=${id.userId}  org=${id.orgId}  role=${id.role}${id.groups.length ? `  groups=${id.groups.join(",")}` : ""}`,
@@ -98,6 +99,7 @@ async function main() {
       `  ${ok(audit)} audit log   ${audit ? "ON (append-only, tamper-evident)" : "off - enable with: CHITTA_AUDIT=1"}`,
       `  ${ok(!!process.env.CONTEXT_MEMORY_TTL_DAYS)} memory TTL  ${process.env.CONTEXT_MEMORY_TTL_DAYS ? `${process.env.CONTEXT_MEMORY_TTL_DAYS} days` : "none (memories don't auto-expire)"}`,
       `  ${ok(!!process.env.CONTEXT_LLM_URL)} LLM extract ${process.env.CONTEXT_LLM_URL ? `${process.env.CONTEXT_LLM_MODEL || "default"} @ ${process.env.CONTEXT_LLM_URL}` : "off (caller-supplied typed triples)"}`,
+      `  ${ok(askSt.ready)} ask (LLM)   ${askSt.detail}`,
       "",
       `  contents     ${count("SELECT count(*) c FROM nodes WHERE coll='records'")} records · ${count("SELECT count(*) c FROM chunks")} chunks · ${count("SELECT count(*) c FROM nodes WHERE coll='entities'")} entities`,
     ]
@@ -117,6 +119,50 @@ async function main() {
     }
     console.log(lines.join("\n"))
     s.close()
+    return
+  }
+
+  // warm: pre-download every lazy model so nothing is fetched at question time - the
+  // "preload after install" story. Idempotent; a warmed machine finishes in ~2 s.
+  if (cmd === "warm") {
+    const { personalContext } = await import("./personal")
+    const { ensureAskModel, localAnswerer } = await import("./answer")
+    console.log("warming Chitta (one-time model downloads; everything after this is instant):")
+    const step = async (name: string, fn: () => Promise<string | void>) => {
+      const t0 = performance.now()
+      try {
+        const extra = await fn()
+        console.log(`  \x1b[32m✓\x1b[0m ${name}${extra ? ` - ${extra}` : ""}  \x1b[2m${((performance.now() - t0) / 1000).toFixed(1)}s\x1b[0m`)
+      } catch (e) {
+        console.log(`  \x1b[31m✗\x1b[0m ${name} - ${(e as Error).message}`)
+      }
+    }
+    const ctx = personalContext()
+    await step("embeddings (bge-small)", async () => {
+      const dim = (await ctx.embeddings.embedDense("warm-up probe")).length
+      return `${dim}-dim ready`
+    })
+    await step("reranker (ms-marco MiniLM)", async () => {
+      const { CrossEncoderReranker } = await import("./reranker")
+      const scores = await new CrossEncoderReranker().rank("warm", ["probe"])
+      return scores ? "ready" : "unavailable (retrieval keeps RRF order)"
+    })
+    await step("ask model", async () => {
+      if (process.env.CONTEXT_LLM_URL) return `remote endpoint configured (${process.env.CONTEXT_LLM_URL}) - nothing to download`
+      let lastPct = -1
+      const p = await ensureAskModel(arg("--model"), (got, total) => {
+        const pct = total ? Math.floor((got / total) * 100) : 0
+        if (pct !== lastPct) {
+          lastPct = pct
+          process.stderr.write(`\r    downloading ${(got / 1e6).toFixed(0)} MB${total ? ` of ${(total / 1e6).toFixed(0)} MB (${pct}%)` : ""} `)
+        }
+      })
+      if (lastPct >= 0) process.stderr.write("\n")
+      const a = await localAnswerer(p)
+      await a.generate("Reply with exactly: OK", "Say OK")
+      return a.label
+    })
+    ctx.store.close()
     return
   }
 
@@ -288,6 +334,55 @@ async function main() {
       if (res.searchResults.length === 0) console.log("  (no accessible context)")
       break
     }
+    case "ask": {
+      // One direct, cited answer instead of a snippet list. Retrieval is the same
+      // zero-token pipeline as `query`; only the final phrasing uses a model - a tiny
+      // in-process GGUF by default (downloaded once), or CONTEXT_LLM_URL if set.
+      const q = process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : undefined
+      if (!q) {
+        console.log('usage: chitta ask "your question" [--no-llm] [--model <gguf path|url>] [--limit N]')
+        break
+      }
+      const id = (await import("./personal")).identity()
+      const userId = arg("--user") ?? id.userId
+      const orgId = arg("--org") ?? id.orgId
+      const limit = Number(arg("--limit", "8"))
+      const { gatherAskContext, answerFromMemory, resolveAnswerer } = await import("./answer")
+      if (has("--no-llm")) {
+        // retrieval-only: the notes the model WOULD see, with provenance - no model at all
+        const notes = await gatherAskContext(ctx, userId, orgId, q, limit)
+        if (notes.length === 0) console.log("(nothing in memory about that yet - remember something or run `chitta learn`)")
+        for (const n of notes) console.log(`[${n.n}] ${n.kind.padEnd(7)} ${n.text}${n.name ? `  \x1b[2m(${n.name})\x1b[0m` : ""}`)
+        break
+      }
+      const t0 = performance.now()
+      let lastPct = -1
+      const answerer = await resolveAnswerer({
+        model: arg("--model"),
+        onProgress: (got, total) => {
+          const pct = total ? Math.floor((got / total) * 100) : 0
+          if (pct !== lastPct) {
+            lastPct = pct
+            process.stderr.write(`\rdownloading local model (one time): ${(got / 1e6).toFixed(0)} MB${total ? ` of ${(total / 1e6).toFixed(0)} MB (${pct}%)` : ""} `)
+          }
+        },
+      })
+      if (lastPct >= 0) process.stderr.write("\n")
+      const res = await answerFromMemory(ctx, userId, orgId, q, answerer.generate, {
+        model: answerer.label,
+        limit,
+        onToken: (t) => process.stdout.write(t),
+      })
+      if (!res.synthesized) {
+        console.log(res.answer)
+        break
+      }
+      const secs = ((performance.now() - t0) / 1000).toFixed(1)
+      process.stdout.write("\n")
+      console.log(`\x1b[2m\n  grounded on ${res.sources.length} note(s) · ${res.model} · ${secs}s\x1b[0m`)
+      for (const s of res.sources) console.log(`\x1b[2m  [${s.n}] ${s.kind.padEnd(7)} ${s.text.slice(0, 100)}${s.name ? ` (${s.name})` : ""}\x1b[0m`)
+      break
+    }
     case "rebuild-graph": {
       const res = await ctx.rebuildGraph()
       console.log(`rebuilt knowledge graph: ${res.records} records → ${res.entities} concept-mentions`)
@@ -299,7 +394,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: doctor | learn [dir] [--max-files N] [--open] | sleep | graph [--out f] [--open] | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | warm | learn [dir] [--max-files N] [--open] | ask \"question\" [--no-llm|--model m] | query | sleep | graph [--out f] [--open] | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }

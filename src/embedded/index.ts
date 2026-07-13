@@ -168,9 +168,9 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
         const storedDim = decodeF32(row.embedding).length
         const curDim = (await embeddings.embedDense("dimension probe")).length
         if (storedDim !== curDim) {
-          opts.log?.error(
-            `[chitta] embedder changed for this DB (${storedDim}d → ${curDim}d); reindexing all chunks to the current embedder`,
-          )
+          // NEVER silent: this is the "my recall got weird" trap. No logger ⇒ stderr.
+          const warn = opts.log?.error ?? ((m: string) => console.error(m))
+          warn(`[chitta] embedder changed for this DB (${storedDim}d → ${curDim}d); reindexing all chunks to the current embedder`)
           await reindex()
         }
       } catch {
@@ -236,6 +236,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // The pipeline lives in ./retrieval/* - this is a thin wrapper that threads the
   // shared embedded state into the orchestrator.
   async function searchWithGraph(query: string, userId: string, orgId: string, trace?: SearchTrace, limit?: number): Promise<RetrievalResponse> {
+    await reconcile() // a store built by a DIFFERENT embedder must heal on read too, not only on ingest
     return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace, limit)
   }
 
@@ -266,6 +267,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   }
 
   async function recallMemories(query: string, userId: string, orgId: string, limit = 8): Promise<RecalledMemory[]> {
+    await reconcile() // memory embeddings live in the same vector space - heal drift on read
     await ensureMemories() // backfill from the graph on first use for pre-existing DBs
     store.memories.sweep() // lazy TTL: retire any expired dynamic memories first
     const accessible = await graph.getAccessibleVirtualRecordIds({ userId, orgId })
