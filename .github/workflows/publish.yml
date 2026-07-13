@@ -12,6 +12,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    env:
+      # GitHub disallows the secrets context inside step `if:` expressions, so the
+      # presence check is materialized here ("true"/"false" string) and steps test it.
+      HAVE_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -35,15 +39,15 @@ jobs:
       # secret is not configured - e.g. a release cut before CI publishing is
       # set up, or one already published manually with `bun publish`.
       - name: Configure npm registry auth
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: env.HAVE_NPM_TOKEN == 'true'
         run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: env.HAVE_NPM_TOKEN == 'true'
         run: bun publish --access public
 
       - name: Publish skipped (no NPM_TOKEN)
-        if: ${{ secrets.NPM_TOKEN == '' }}
+        if: env.HAVE_NPM_TOKEN != 'true'
         run: echo "::warning::NPM_TOKEN secret not configured - tests ran green but npm publish was SKIPPED. Add the secret (Settings -> Secrets -> Actions -> NPM_TOKEN) or publish manually with 'bun publish --access public'."
