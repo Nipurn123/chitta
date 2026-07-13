@@ -8,6 +8,16 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.4.1] - 2026-07-13
+
+### Fixed
+- **The published CLI ran stale code.** The npm `bin` pointed at `dist/bin.js`, a pre-bundled
+  build from 0.2.0 that was gitignored and silently packed as-is - so `bunx @100xprompt/chitta`
+  delivered old behavior even though fresh `src/` shipped in the same tarball. The bin is now a
+  3-line shim that imports `src/bin.ts` directly (Bun executes TypeScript natively), tracked in
+  git, and it can never go stale again. `files` also narrowed from `dist` to `dist/bin.js` so a
+  locally built compiled binary can never bloat a future tarball.
+
 ## [0.4.0] - 2026-07-13
 
 The "advanced memory" release: the graph you can see, memory that learns from use, multi-agent

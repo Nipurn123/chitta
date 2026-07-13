@@ -1,5 +1,8 @@
 node_modules/
-dist/
+# build output stays out of git - EXCEPT the bin shim, which is source (a 3-line
+# launcher the npm "bin" field points at; tracking it prevents stale-bundle bugs)
+dist/*
+!dist/bin.js
 *.db
 *.db-*
 bak-*
