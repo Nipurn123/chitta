@@ -117,6 +117,13 @@ async function main() {
         lines.push(`\n  ⚠ CONTEXT_DB_KEY is set but the \`libsql\` package isn't installed - run: bun add libsql`)
       }
     }
+    // Mixed embedding dimensions ⇒ an embedder switch (or an interrupted reindex) left the store
+    // half-converted; recall is unreliable until it's made consistent. Cheap to detect (distinct
+    // blob byte-lengths), needs no model download.
+    const dimGroups = (s.db.query("SELECT count(DISTINCT length(embedding)) d FROM chunks WHERE embedding IS NOT NULL").get() as { d: number }).d
+    if (dimGroups > 1) {
+      lines.push(`\n  ⚠ mixed embedding dimensions in this store - recall is degraded until you run once (resumable):  chitta reindex-vectors`)
+    }
     console.log(lines.join("\n"))
     s.close()
     return
@@ -390,8 +397,23 @@ async function main() {
       break
     }
     case "reindex-vectors": {
-      const n = await ctx.reindex()
-      console.log(`re-embedded ${n} chunks and rebuilt the vector index`)
+      // Resumable + visible: re-embeds only what a different embedder wrote (reuses vectors already
+      // at the current dim), with a live progress line so a large migration is never a silent hang.
+      let last = -1
+      const t0 = performance.now()
+      const r = await ctx.reindex((done, total) => {
+        const pct = total ? Math.floor((done / total) * 100) : 100
+        if (pct !== last) {
+          last = pct
+          process.stderr.write(`\r  reindexing ${done}/${total} (${pct}%) `)
+        }
+      })
+      if (last >= 0) process.stderr.write("\n")
+      const secs = ((performance.now() - t0) / 1000).toFixed(1)
+      console.log(
+        `re-embedded ${r.reembedded} item(s)${r.reused ? `, reused ${r.reused} already current` : ""}; ` +
+          `rebuilt the vector index over ${r.total} item(s) in ${secs}s`,
+      )
       break
     }
     default:

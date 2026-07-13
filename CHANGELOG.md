@@ -8,6 +8,27 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.7.3] - 2026-07-13
+
+### Fixed
+- **A large store that changed embedders could stall in a mixed-dimension state.** When the
+  active embedder's dimension differs from what a store was built with, the read-path self-heal
+  (0.7.0) re-embedded every chunk inline on the first query. On a big store (100K+ chunks) that
+  is minutes of work: it blocked the query, several processes sharing the DB (e.g. multiple MCP
+  servers) could race the same migration, and an interrupt left the store half-converted (mixed
+  256d/384d vectors), which degrades recall. Now:
+  - **`reindex()` is resumable and reports progress.** Items already at the current embedder's
+    dimension are reused as-is (only re-added to the rebuilt index); only stale-dim items are
+    re-embedded. So a migration - or one interrupted half-way - finishes by doing just what's
+    left, not everything again. `chitta reindex-vectors` shows a live `done/total (pct%)` line
+    and reports `re-embedded N, reused M`.
+  - **The read-path never launches a big migration inline.** Drift is detected by counting
+    stale-dimension chunks (not sampling one row, which could miss a mixed store). A small drift
+    still heals silently; a large one (over `CONTEXT_RECONCILE_INLINE_MAX`, default 3000) instead
+    warns with the exact one-time fix and proceeds, so a query never blocks for minutes and
+    processes don't race.
+  - **`chitta doctor` flags a mixed-dimension store** and points at `chitta reindex-vectors`.
+
 ## [0.7.2] - 2026-07-13
 
 ### Fixed

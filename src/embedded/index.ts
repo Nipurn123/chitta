@@ -26,6 +26,14 @@ import { cosine } from "./retrieval/passage"
 import { decodeF32 } from "./store/vector-blob"
 import type { SearchTrace } from "./retrieval/trace"
 
+/** Outcome of a reindex pass: how many items were re-embedded vs reused (already at the
+ *  current embedder's dimension), out of the total walked. */
+export interface ReindexStats {
+  total: number
+  reembedded: number
+  reused: number
+}
+
 /** A current memory surfaced to a caller (latest version, not forgotten), ACL-scoped. */
 export interface RecalledMemory {
   memory: string
@@ -161,18 +169,31 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   function reconcile(): Promise<void> {
     return (reconcilePromise ??= (async () => {
       try {
-        const row = store.db
-          .query("SELECT embedding FROM chunks WHERE embedding IS NOT NULL LIMIT 1")
-          .get() as { embedding: Uint8Array | string } | undefined
-        if (!row) return // empty DB → the current embedder defines the vector space
-        const storedDim = decodeF32(row.embedding).length
-        const curDim = (await embeddings.embedDense("dimension probe")).length
-        if (storedDim !== curDim) {
-          // NEVER silent: this is the "my recall got weird" trap. No logger ⇒ stderr.
-          const warn = opts.log?.error ?? ((m: string) => console.error(m))
-          warn(`[chitta] embedder changed for this DB (${storedDim}d → ${curDim}d); reindexing all chunks to the current embedder`)
-          await reindex()
+        const curBytes = (await embeddings.embedDense("dimension probe")).length * 4
+        // Count how many stored chunks were written by a DIFFERENT embedder (byte length is
+        // 4×dim). One count catches every case the old LIMIT-1 sample missed: all-stale, AND a
+        // MIXED store half-converted by a prior interrupted reindex (where sampling one row could
+        // read a right-dim chunk and wrongly conclude "fine").
+        const mism = (store.db
+          .query("SELECT count(*) c FROM chunks WHERE embedding IS NOT NULL AND length(embedding) != ?")
+          .get(curBytes) as { c: number }).c
+        if (mism === 0) return
+        const warn = opts.log?.error ?? ((m: string) => console.error(m))
+        // A large re-embed is minutes of work. NEVER run it inline on a read: it would block the
+        // query, and several processes sharing the DB (e.g. multiple MCP servers) would each race
+        // the same migration. Warn with the exact one-time, resumable fix and proceed - recall is
+        // degraded until the user runs it. Small drifts (the common case: an embedder flipped on a
+        // modest store) still heal silently inline. Cutover tunable via CONTEXT_RECONCILE_INLINE_MAX.
+        const inlineMax = Number(process.env.CONTEXT_RECONCILE_INLINE_MAX ?? 3000)
+        if (mism > inlineMax) {
+          warn(
+            `[chitta] ${mism} chunks were embedded with a different model than the active one; ` +
+              `recall is degraded until you run once (resumable):  chitta reindex-vectors`,
+          )
+          return
         }
+        warn(`[chitta] healing embedder drift on ${mism} chunk(s); reindexing to the active embedder`)
+        await reindex()
       } catch {
         /* never block ingest/query on reconcile */
       }
@@ -487,25 +508,51 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
 
   // Re-embed every stored chunk with the current embedder and rebuild the ANN
   // index. Needed when switching embedders (e.g. hash → transformers, different dim).
-  async function reindex(): Promise<number> {
+  async function reindex(onProgress?: (done: number, total: number) => void): Promise<ReindexStats> {
     store.resetVec()
     store.resetFts()
-    const rows = store.db.query("SELECT point_id, virtual_record_id, org_id, content FROM chunks").all() as Array<{
+    // RESUMABLE: an item whose stored vector is ALREADY the active embedder's dimension is reused
+    // as-is (re-added to the freshly reset index without re-embedding); only stale-dim items are
+    // re-embedded. So an interrupted run - or a store left half-converted (mixed dims) by a prior
+    // interrupt - finishes by doing only what's left, not everything again. The re-embed calls are
+    // the whole cost of a big migration, and this skips the ones already done.
+    const curBytes = (await embeddings.embedDense("dimension probe")).length * 4
+    const bytesOf = (e: unknown): number => (e instanceof Uint8Array ? e.byteLength : -1)
+    const chunks = store.db.query("SELECT point_id, virtual_record_id, org_id, content, embedding FROM chunks").all() as Array<{
       point_id: string
       virtual_record_id: string
       org_id: string
       content: string
+      embedding: Uint8Array | string | null
     }>
-    for (const r of rows) {
-      const emb = await embeddings.embedDense(r.content)
+    const memories = store.memories.all()
+    const total = chunks.length + memories.length
+    let done = 0
+    let reembedded = 0
+    let reused = 0
+    for (const r of chunks) {
+      let emb: number[]
+      if (bytesOf(r.embedding) === curBytes) {
+        emb = Array.from(decodeF32(r.embedding as Uint8Array)) // already current - reuse the vector
+        reused++
+      } else {
+        emb = await embeddings.embedDense(r.content)
+        reembedded++
+      }
       store.addChunk(r.point_id, r.virtual_record_id, r.org_id, r.content, emb)
+      onProgress?.(++done, total)
     }
-    // Memories carry their own embeddings (for semantic recall) - re-embed them too so
-    // an embedder switch doesn't leave the memory layer in a stale vector space.
-    for (const m of store.memories.all()) {
-      store.memories.updateEmbedding(m.id, await embeddings.embedDense(m.memory))
+    // Memories carry their own embeddings (for semantic recall). resetVec doesn't touch them, so a
+    // memory already at the current dim needs nothing; only stale ones are re-embedded.
+    for (const m of memories) {
+      if (bytesOf(m.embedding) === curBytes) reused++
+      else {
+        store.memories.updateEmbedding(m.id, await embeddings.embedDense(m.memory))
+        reembedded++
+      }
+      onProgress?.(++done, total)
     }
-    return rows.length
+    return { total, reembedded, reused }
   }
 
   // Backfill / rebuild the MEMORY layer from the typed graph that already exists. Atomic
