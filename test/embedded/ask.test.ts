@@ -32,6 +32,23 @@ class VecEmbeddings implements EmbeddingProvider {
 const mkNotes = (texts: string[], kind: AskNote["kind"] = "fact"): AskNote[] =>
   texts.map((text, i) => ({ n: i + 1, kind, text }))
 
+// A tiny deterministic SEMANTIC embedder: bag-of-words over a fixed vocab, L2-normalized, so
+// texts sharing words have high cosine. Declares non-lexical, so it exercises the ask RANKING
+// path (the hash embedder would skip ranking). Enough to prove "relevant note ranks first".
+class BowEmbeddings implements EmbeddingProvider {
+  private vocab = ["coding", "preference", "preferences", "user", "loves", "pirate", "talk", "texas", "musk", "lives"]
+  isLexical() { return false }
+  private vec(t: string): number[] {
+    const words = new Set(t.toLowerCase().split(/\W+/))
+    const v = this.vocab.map((w) => (words.has(w) ? 1 : 0))
+    const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1
+    return v.map((x) => x / n)
+  }
+  async embedDense(t: string) { return this.vec(t) }
+  async embedQuery(t: string) { return this.vec(t) }
+  async embedSparse() { return { indices: [] as number[], values: [] as number[] } }
+}
+
 const mk = () => {
   const ctx = buildEmbeddedContext({ path: ":memory:" })
   ctx.ingestor.registerUser("u", "o", "e", "admin")
@@ -78,6 +95,22 @@ describe("gatherAskContext", () => {
     expect(notes.length).toBeLessThanOrEqual(3)
     const texts = notes.map((n) => n.text.toLowerCase().replace(/\s+/g, " "))
     expect(new Set(texts).size).toBe(texts.length)
+    ctx.store.close()
+  })
+
+  test("ranks the RELEVANT note first regardless of source (the code-heavy-store fix)", async () => {
+    // a semantic store with one on-topic record and one off-topic one
+    const ctx = buildEmbeddedContext({ path: ":memory:", embeddings: new BowEmbeddings() })
+    ctx.ingestor.registerUser("u", "o", "e", "admin")
+    await ctx.authorizedIngest("u", { recordId: "pref", orgId: "o", recordName: "pref", permittedPrincipals: ["u"], text: "User loves coding" })
+    await ctx.authorizedIngest("u", { recordId: "pirate", orgId: "o", recordName: "pirate", permittedPrincipals: ["u"], text: "Talk like a pirate" })
+    const notes = await gatherAskContext(ctx, "u", "o", "coding preferences", 8)
+    expect(notes.length).toBeGreaterThan(0)
+    expect(notes[0].text.toLowerCase()).toContain("coding") // relevant note is #1, not the pirate noise
+    // scores are populated and monotonically non-increasing (ranked, not source-ordered)
+    const scores = notes.map((n) => n.score ?? -1)
+    expect(scores[0]).toBeGreaterThan(0)
+    expect(scores.every((s, i) => i === 0 || s <= scores[i - 1])).toBe(true)
     ctx.store.close()
   })
 })
@@ -165,9 +198,25 @@ describe("relevance gate (notesAreGrounded)", () => {
     expect(g.best).toBeCloseTo(0)
   })
 
-  test("a graph exact-answer note bypasses the gate (relevant by construction)", async () => {
-    const e = new VecEmbeddings({ q: [1, 0, 0], x: [0, 1, 0] })
-    expect((await notesAreGrounded(e, "q", mkNotes(["x"], "graph"))).grounded).toBe(true)
+  test("a graph note is held to the floor too - a loose KGQA match is refused, not auto-grounded", async () => {
+    const off = new VecEmbeddings({ q: [1, 0, 0], x: [0, 1, 0] }) // orthogonal → cosine 0
+    expect((await notesAreGrounded(off, "q", mkNotes(["x"], "graph"))).grounded).toBe(false)
+    const on = new VecEmbeddings({ q: [1, 0, 0], hit: [1, 0, 0] }) // a RELEVANT graph note still passes
+    expect((await notesAreGrounded(on, "q", mkNotes(["hit"], "graph"))).grounded).toBe(true)
+  })
+
+  test("a precomputed note score is reused (no re-embedding needed)", async () => {
+    // an embedder that would THROW if asked to embed - proves the score path avoids it
+    const trap: EmbeddingProvider = {
+      isLexical: () => false,
+      embedDense: async () => { throw new Error("should not embed - score was precomputed") },
+      embedQuery: async () => { throw new Error("should not embed - score was precomputed") },
+      embedSparse: async () => ({ indices: [], values: [] }),
+    }
+    const notes: AskNote[] = [{ n: 1, kind: "snippet", text: "x", score: 0.82 }]
+    expect((await notesAreGrounded(trap, "q", notes)).grounded).toBe(true)
+    notes[0].score = 0.2
+    expect((await notesAreGrounded(trap, "q", notes)).grounded).toBe(false)
   })
 
   test("the gate is skipped on a lexical (hash) embedder - no false refusals there", async () => {
@@ -195,14 +244,15 @@ describe("relevance gate (notesAreGrounded)", () => {
 })
 
 describe("buildAskPrompt", () => {
-  test("renders numbered notes with source names", () => {
+  test("renders numbered notes by NUMBER + text only - source labels stay out of the prompt", () => {
     const { system, user } = buildAskPrompt("q?", [
       { n: 1, kind: "fact", text: "A fact." },
-      { n: 2, kind: "snippet", text: "A snippet.", name: "notes.md" },
+      { n: 2, kind: "snippet", text: "A snippet.", name: "packages/app/notes.md" },
     ])
     expect(system.length).toBeGreaterThan(20)
     expect(user).toContain("[1] A fact.")
-    expect(user).toContain("[2] (notes.md) A snippet.")
+    expect(user).toContain("[2] A snippet.")
+    expect(user).not.toContain("notes.md") // the source label is for the human footer, not the model
     expect(user).toContain("Question: q?")
   })
 })

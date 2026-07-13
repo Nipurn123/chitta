@@ -25,6 +25,9 @@ export interface AskNote {
   text: string
   /** Human source label (record name / citation), when known. */
   name?: string
+  /** Relevance of this note to the question (query-note cosine; 1 on the lexical embedder). Set by
+   *  gatherAskContext, which ranks by it, and reused by the grounding gate. */
+  score?: number
 }
 
 export interface AskResult {
@@ -243,10 +246,17 @@ function cleanSourceName(name?: string): string | undefined {
   return human.length ? human.join(", ") : undefined
 }
 
-/** Gather the numbered evidence for a question - the SAME zero-token retrieval the rest of
- *  Chitta runs, flattened into notes: the typed graph's exact answer first (highest precision),
- *  then the current atomic facts (belief-revised - superseded truths are already gone), then
- *  hybrid search snippets. Deduped, capped, ACL-scoped like everything else. */
+/** Gather the numbered evidence for a question - the SAME zero-token retrieval the rest of Chitta
+ *  runs (the typed graph's exact answer, the current belief-revised atomic facts, and hybrid
+ *  search passages), pooled and then RANKED BY RELEVANCE to the question, best first.
+ *
+ *  Ranking (not source order) is the point: filling the note budget graph-first then facts-first
+ *  let a noisy / code-heavy store pack every slot with loosely-matched typed triples ("Talk likes
+ *  pirate") before the hybrid-search passage that actually answers ("User loves coding") ever got
+ *  one. Scoring every candidate by query cosine surfaces the relevant note whatever source it came
+ *  from - a precise KGQA answer still ranks at the top, a loose one is demoted out. Deduped,
+ *  budget-capped, ACL-scoped like everything else. On the lexical (hash) embedder, where an
+ *  absolute cosine isn't meaningful, we keep the original source order (graph > facts > snippets). */
 export async function gatherAskContext(
   ctx: EmbeddedContext,
   userId: string,
@@ -254,29 +264,44 @@ export async function gatherAskContext(
   question: string,
   limit = 8,
 ): Promise<AskNote[]> {
+  // Pull a WIDER candidate pool than the final note count: on a large store the note that answers
+  // may not be in the top few by any single signal, so we over-fetch and let cosine ranking pick.
+  const pool = Math.max(20, limit * 2)
   const [exact, facts, search] = await Promise.all([
     ctx.ask(question, userId, orgId).catch(() => null),
-    ctx.recallMemories(question, userId, orgId, 6).catch(() => []),
-    ctx.searchWithGraph(question, userId, orgId, undefined, limit).catch(() => ({ searchResults: [] as Array<{ content: string; metadata: unknown }> })),
+    ctx.recallMemories(question, userId, orgId, pool).catch(() => []),
+    ctx.searchWithGraph(question, userId, orgId, undefined, pool).catch(() => ({ searchResults: [] as Array<{ content: string; metadata: unknown }> })),
   ])
 
-  const notes: AskNote[] = []
-  const seen = new Set<string>()
-  let budget = PROMPT_CHARS
-  const push = (kind: AskNote["kind"], text: string, name?: string) => {
-    const t = text.trim().slice(0, NOTE_CHARS)
-    const key = norm(t)
-    if (!t || seen.has(key) || budget - t.length < 0 || notes.length >= limit) return
-    seen.add(key)
-    budget -= t.length
-    notes.push({ n: notes.length + 1, kind, text: t, name })
-  }
+  type Cand = { kind: AskNote["kind"]; text: string; name?: string }
+  const cands: Cand[] = []
+  if (exact) for (const f of exact.facts) cands.push({ kind: "graph", text: f, name: cleanSourceName(exact.citations.join(", ")) })
+  for (const f of facts) cands.push({ kind: "fact", text: f.memory })
+  for (const r of search.searchResults) cands.push({ kind: "snippet", text: r.content, name: cleanSourceName((r.metadata as { recordName?: string })?.recordName) })
 
-  if (exact) for (const f of exact.facts.slice(0, 3)) push("graph", f, cleanSourceName(exact.citations.join(", ")))
-  for (const f of facts) push("fact", f.memory)
-  for (const r of search.searchResults) {
-    const m = r.metadata as { recordName?: string }
-    push("snippet", r.content, cleanSourceName(m?.recordName))
+  const lexical = (await ctx.embeddings.isLexical?.()) ?? false
+  const qv = lexical ? null : await (ctx.embeddings.embedQuery ? ctx.embeddings.embedQuery(question) : ctx.embeddings.embedDense(question))
+
+  const seen = new Set<string>()
+  const scored: Array<Cand & { score: number }> = []
+  let order = 0
+  for (const c of cands) {
+    const text = c.text.trim().slice(0, NOTE_CHARS)
+    const key = norm(text)
+    if (!text || seen.has(key)) continue
+    seen.add(key)
+    // semantic: rank by query cosine; lexical: no calibrated cosine, so preserve source order.
+    const score = qv ? cosine(qv, await ctx.embeddings.embedDense(text)) : 1 - order++ * 1e-6
+    scored.push({ ...c, text, score })
+  }
+  scored.sort((a, b) => b.score - a.score)
+
+  const notes: AskNote[] = []
+  let budget = PROMPT_CHARS
+  for (const c of scored) {
+    if (notes.length >= limit || budget - c.text.length < 0) break
+    budget -= c.text.length
+    notes.push({ n: notes.length + 1, kind: c.kind, text: c.text, name: c.name, score: c.score })
   }
   return notes
 }
@@ -296,37 +321,45 @@ const SYSTEM_PROMPT = [
   "Be direct: one to three short sentences.",
 ].join("\n")
 
-// Refuse below this query-vs-note cosine (semantic embedders only). Calibrated on bge-small:
-// real answers sit ~0.75-0.9, out-of-scope questions ~0.4-0.5, so 0.6 splits them with margin.
-// Override with CONTEXT_ASK_FLOOR. A KGQA graph match bypasses the gate (relevant by construction).
-const RELEVANCE_FLOOR = 0.6
+// Refuse below this query-vs-note cosine (semantic embedders only). Calibrated on bge-small over
+// real queries: in-store answers cluster ~0.66-0.80 (even when the stored fact is phrased
+// differently from the question, e.g. "User loves coding" for "my coding preferences" ≈ 0.72),
+// while out-of-scope questions sit ~0.31-0.51. 0.55 splits them - low enough not to falsely refuse
+// a real answer worded unlike the question, high enough to still refuse off-topic. CONTEXT_ASK_FLOOR overrides.
+const RELEVANCE_FLOOR = 0.55
 
-/** The deterministic honesty gate: is ANY gathered note actually relevant to the question?
+/** The deterministic honesty gate: is the BEST gathered note actually relevant to the question?
  *  This is what stops a small model answering an out-of-scope question from its own pretraining -
- *  we decide relevance from retrieval, not from the model. A typed-graph exact answer counts as
- *  relevant by construction; otherwise we require a semantic hit at or above the floor. Skipped on
- *  the lexical (hash) embedder, whose cosine scale this floor is not calibrated for (the prompt is
- *  the only backstop there). Returns the best score too, for observability/tests. */
+ *  we decide relevance from retrieval, not from the model. Every note (including a KGQA graph
+ *  answer) is held to the cosine floor: a precise typed answer scores high and passes, a loose one
+ *  ("Talk likes pirate" for "coding preferences") is correctly refused. Skipped on the lexical
+ *  (hash) embedder, whose cosine scale this floor is not calibrated for (the prompt is the only
+ *  backstop there). Reuses gatherAskContext's precomputed note scores when present. */
 export async function notesAreGrounded(
   embeddings: EmbeddingProvider,
   question: string,
   notes: AskNote[],
 ): Promise<{ grounded: boolean; best: number }> {
   if (notes.length === 0) return { grounded: false, best: 0 }
-  if (notes.some((n) => n.kind === "graph")) return { grounded: true, best: 1 }
   if (await embeddings.isLexical?.()) return { grounded: true, best: 1 } // floor uncalibrated for hash
   const floor = Number(process.env.CONTEXT_ASK_FLOOR ?? RELEVANCE_FLOOR)
-  const qv = await (embeddings.embedQuery ? embeddings.embedQuery(question) : embeddings.embedDense(question))
+  // Notes carry a precomputed relevance score from gatherAskContext; fall back to embedding for
+  // hand-built notes (tests / direct callers) that don't.
+  const needEmbed = notes.some((n) => n.score === undefined)
+  const qv = needEmbed ? await (embeddings.embedQuery ? embeddings.embedQuery(question) : embeddings.embedDense(question)) : null
   let best = 0
   for (const n of notes) {
-    const s = cosine(qv, await embeddings.embedDense(n.text))
+    const s = n.score ?? cosine(qv!, await embeddings.embedDense(n.text))
     if (s > best) best = s
   }
   return { grounded: best >= floor, best }
 }
 
 export function buildAskPrompt(question: string, notes: AskNote[]): { system: string; user: string } {
-  const lines = notes.map((s) => `[${s.n}]${s.name ? ` (${s.name})` : ""} ${s.text}`)
+  // Feed the model only the note NUMBER + text - not the source label. The label (a filename /
+  // record name) is for the human's citation footer; putting it in the prompt just tempts a small
+  // model to echo "(packages/…/foo.ts)" into its answer. It cites by number; we show the source.
+  const lines = notes.map((s) => `[${s.n}] ${s.text}`)
   return { system: SYSTEM_PROMPT, user: `Memory notes:\n${lines.join("\n")}\n\nQuestion: ${question}` }
 }
 

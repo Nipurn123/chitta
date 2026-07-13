@@ -8,6 +8,25 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.7.4] - 2026-07-13
+
+### Changed
+- **`ask` now ranks its evidence by relevance, not by source.** Previously it filled the note
+  budget graph-first, then facts, then search snippets - so on a large or noisy store the slots
+  filled with loosely-matched typed triples before the hybrid-search passage that actually
+  answered ever got one, and the answer was refused. Notes from all sources are now pooled
+  (wider candidate pool), scored by query cosine, and the most relevant kept - a precise KGQA
+  answer still ranks top, a loose one is demoted out.
+- **The grounding gate holds every note to the cosine floor, including KGQA graph answers.** A
+  loose typed match ("Talk likes pirate" for "coding preferences") no longer auto-grounds the
+  answer; a precise one scores high and passes as before. Floor recalibrated to **0.55** (from
+  0.6) against real queries - in-store answers phrased unlike the question (e.g. "User loves
+  coding" for "my coding preferences" ≈ 0.72) cluster at 0.66-0.80, out-of-scope at 0.31-0.51,
+  so 0.55 admits the former without the latter. `CONTEXT_ASK_FLOOR` overrides.
+- **Source labels are no longer fed to the model**, only the note number + text. The label (a
+  filename / record name) is shown in the citation footer; keeping it out of the prompt stops a
+  small model echoing "(packages/…/foo.ts)" into its answer.
+
 ## [0.7.3] - 2026-07-13
 
 ### Fixed
