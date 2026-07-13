@@ -52,6 +52,9 @@ export class TransformersEmbeddings implements EmbeddingProvider {
     const envDim = Number(process.env.CONTEXT_EMBED_DIM ?? 0) || 0
     this.dim = envDim || (model.toLowerCase().includes("embeddinggemma") ? 256 : 0)
   }
+  isLexical(): boolean {
+    return false // a real semantic embedding space
+  }
 
   private async pipe() {
     if (this.extractor) return this.extractor
@@ -121,5 +124,9 @@ export class AutoEmbeddings implements EmbeddingProvider {
   }
   async embedSparse(q: string) {
     return (await this.pick()).embedSparse(q)
+  }
+  // Only known after resolving the backend: real transformers → semantic, hash fallback → lexical.
+  async isLexical(): Promise<boolean> {
+    return (await this.pick()) === this.fallback
   }
 }

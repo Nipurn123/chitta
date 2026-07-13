@@ -37,7 +37,7 @@ r.synthesized // false ⇒ memory had nothing relevant and NO model was invoked
 
 - The default model (Qwen2.5-0.5B instruct, ~0.4 GB) downloads once on first use, then **stays loaded** - repeat asks run in ~0.5 s. Stream with `onToken`, cap grounding with `limit`, swap models with `{ model: "<gguf path|url>" }`.
 - Set `CONTEXT_LLM_URL` (plus `CONTEXT_LLM_MODEL` / `CONTEXT_LLM_KEY`) and `ask` uses any OpenAI-compatible endpoint instead - Ollama, LM Studio, vLLM, or a cloud model.
-- The model is instructed to use **only** the retrieved notes and to say *"I don't have that in memory"* otherwise - and on an empty retrieval it is never called at all. Grounded by construction, belief-revised by inheritance (superseded facts never reach the prompt).
+- **Grounded by construction.** A deterministic relevance gate runs first: if no retrieved note clears a semantic-similarity floor (or a typed-graph exact answer), `ask` returns *"I don't have that in memory"* **without invoking the model** - so a small model can't answer an out-of-scope question from its own pretraining or fabricate a citation. When relevant notes exist the model runs, instructed to use only those notes and to refuse if the subject matches but the asked-for fact is absent. Belief-revised by inheritance (superseded facts never reach the prompt). Floor tunable via `CONTEXT_ASK_FLOOR` (default 0.6, `bge-small`).
 
 ## Precise, zero-token knowledge graph
 

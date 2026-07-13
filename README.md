@@ -11,7 +11,7 @@ and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per 
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-382%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-389%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -196,6 +196,13 @@ I don't have that in memory.
 
 Real runs. The second one is the point: the model certainly "knows" Ulaanbaatar - but it is not
 in *your memory*, so Chitta says so instead of hallucinating an answer it can't cite.
+
+**How the refusal is guaranteed (not left to a 0.5B's goodwill):** a deterministic **relevance
+gate** runs first. If retrieval finds no note semantically close enough to the question (or a
+typed-graph exact answer), Chitta returns "I don't have that in memory" **without ever calling the
+model** - so it *cannot* answer from pretraining or fabricate a citation. Only when relevant notes
+exist does the model run, and its prompt still refuses when the subject matches but the specific
+fact is absent (ask for someone's net worth when memory only has where they live, and it says so).
 
 - **Zero setup.** First `ask` downloads the default model once (Qwen2.5-0.5B instruct, ~0.4 GB) -
   or prime everything at install time with **`chitta warm`**. After that the CLI answers in ~2-3 s,

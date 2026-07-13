@@ -62,6 +62,11 @@ export interface EmbeddingProvider {
   embedDense(query: string): Promise<number[]>
   embedQuery?(query: string): Promise<number[]>
   embedSparse(query: string): Promise<{ indices: number[]; values: number[] }>
+  /** True when this is a LEXICAL (keyword-hash) embedder rather than a semantic one. Absolute
+   *  cosine floors (e.g. the `ask` relevance gate) only calibrate against SEMANTIC spaces, so
+   *  callers that threshold on cosine consult this to skip the gate on the hash embedder.
+   *  Async because a lazy/auto provider only knows its resolved backend after first use. */
+  isLexical?(): boolean | Promise<boolean>
 }
 
 /** Embed a QUERY with the asymmetric path when the provider has one, else the doc path. */

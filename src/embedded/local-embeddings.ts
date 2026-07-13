@@ -64,6 +64,9 @@ function embed(text: string): number[] {
 }
 
 export class LocalHashEmbeddings implements EmbeddingProvider {
+  isLexical(): boolean {
+    return true // keyword feature-hashing, not a semantic space
+  }
   async embedDense(query: string): Promise<number[]> {
     return embed(query)
   }

@@ -14,6 +14,8 @@ import path from "node:path"
 import os from "node:os"
 import fs from "node:fs"
 import type { EmbeddedContext } from "./index"
+import type { EmbeddingProvider } from "../provider"
+import { cosine } from "./retrieval/passage"
 
 /** One numbered note handed to the model - also returned to the caller as the citation list. */
 export interface AskNote {
@@ -266,13 +268,49 @@ export async function gatherAskContext(
   return notes
 }
 
+// Grounded-answer instructions. The relevance GATE (below) is what deterministically refuses
+// out-of-scope questions - so by the time the model runs, the notes are already relevant. Its
+// job here is narrower: state ONLY what a note actually says, cite it, and still refuse if the
+// notes are about the right subject but don't contain the specific asked-for fact (e.g. notes
+// about a person that don't state their net worth). The refusal line is a backstop, phrased so
+// it doesn't make a small model drop answers that ARE present.
 const SYSTEM_PROMPT = [
-  "You answer questions from the user's saved memory.",
-  "Use ONLY the numbered memory notes given to you - never outside knowledge.",
-  "Cite the notes you used with their numbers in square brackets, like [1] or [2][3].",
-  'If the notes do not contain the answer, reply exactly: "I don\'t have that in memory."',
-  "Be direct. Answer in one to three short sentences.",
-].join(" ")
+  "You answer the user's question using ONLY the numbered memory notes provided.",
+  "Every claim you make must be stated in a note; never add outside knowledge, even if you are sure.",
+  "Cite each note you use by its number in brackets, like [1] or [2][3].",
+  "If the notes are about the subject but do not state the specific fact asked for, say what you DO know from them and that you don't have the rest.",
+  'If no note is relevant at all, reply exactly: "I don\'t have that in memory."',
+  "Be direct: one to three short sentences.",
+].join("\n")
+
+// Refuse below this query-vs-note cosine (semantic embedders only). Calibrated on bge-small:
+// real answers sit ~0.75-0.9, out-of-scope questions ~0.4-0.5, so 0.6 splits them with margin.
+// Override with CONTEXT_ASK_FLOOR. A KGQA graph match bypasses the gate (relevant by construction).
+const RELEVANCE_FLOOR = 0.6
+
+/** The deterministic honesty gate: is ANY gathered note actually relevant to the question?
+ *  This is what stops a small model answering an out-of-scope question from its own pretraining -
+ *  we decide relevance from retrieval, not from the model. A typed-graph exact answer counts as
+ *  relevant by construction; otherwise we require a semantic hit at or above the floor. Skipped on
+ *  the lexical (hash) embedder, whose cosine scale this floor is not calibrated for (the prompt is
+ *  the only backstop there). Returns the best score too, for observability/tests. */
+export async function notesAreGrounded(
+  embeddings: EmbeddingProvider,
+  question: string,
+  notes: AskNote[],
+): Promise<{ grounded: boolean; best: number }> {
+  if (notes.length === 0) return { grounded: false, best: 0 }
+  if (notes.some((n) => n.kind === "graph")) return { grounded: true, best: 1 }
+  if (await embeddings.isLexical?.()) return { grounded: true, best: 1 } // floor uncalibrated for hash
+  const floor = Number(process.env.CONTEXT_ASK_FLOOR ?? RELEVANCE_FLOOR)
+  const qv = await (embeddings.embedQuery ? embeddings.embedQuery(question) : embeddings.embedDense(question))
+  let best = 0
+  for (const n of notes) {
+    const s = cosine(qv, await embeddings.embedDense(n.text))
+    if (s > best) best = s
+  }
+  return { grounded: best >= floor, best }
+}
 
 export function buildAskPrompt(question: string, notes: AskNote[]): { system: string; user: string } {
   const lines = notes.map((s) => `[${s.n}]${s.name ? ` (${s.name})` : ""} ${s.text}`)
@@ -305,6 +343,13 @@ export async function answerFromMemory(
       synthesized: false,
       model: opts.model,
     }
+  }
+  // Honesty gate: if nothing retrieved is actually relevant, refuse deterministically WITHOUT
+  // invoking the model - a small model, handed only off-topic notes, would otherwise answer the
+  // question from its own pretraining and fabricate a citation. Decide from retrieval, not the model.
+  const { grounded } = await notesAreGrounded(ctx.embeddings, question, notes)
+  if (!grounded) {
+    return { answer: "I don't have that in memory.", sources: [], synthesized: false, model: opts.model }
   }
   const { system, user } = buildAskPrompt(question, notes)
   const answer = (await generate(system, user, opts.onToken)).trim()

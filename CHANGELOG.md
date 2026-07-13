@@ -8,6 +8,22 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.7.1] - 2026-07-13
+
+### Fixed
+- **`ask` could hallucinate on out-of-scope questions.** The default 0.5B model, handed only
+  off-topic notes (e.g. asking "capital of Mongolia" against a store that is all about one
+  person), would answer from its own pretraining and attach a fabricated `[n]` citation -
+  breaking the core "answers only from your memory" promise. `ask` now runs a **deterministic
+  relevance gate** before the model: unless a note clears a semantic-similarity floor (or a
+  typed-graph exact answer exists), it returns "I don't have that in memory" **without invoking
+  the model at all**, so it cannot answer from pretraining or fake a citation. When relevant
+  notes do exist, a tightened prompt still refuses if the subject matches but the specific fact
+  is absent. The floor (default 0.6, calibrated for `bge-small`) is tunable via
+  `CONTEXT_ASK_FLOOR`, and is skipped on the lexical hash embedder whose cosine scale it does not
+  calibrate for. Added `notesAreGrounded()` and an `EmbeddingProvider.isLexical()` marker; 7 new
+  tests cover the gate (389 total).
+
 ## [0.7.0] - 2026-07-13
 
 ### Added
