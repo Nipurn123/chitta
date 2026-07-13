@@ -132,6 +132,37 @@ async function main() {
     return
   }
 
+  // learn: walk a repository and ingest it into the PERSONAL store (the same DB the MCP
+  // server serves) - code via tree-sitter, docs via the text extractor. The agent doesn't
+  // get a one-off report; it REMEMBERS the codebase across every future session.
+  if (cmd === "learn") {
+    const { personalContext, identity } = await import("./personal")
+    const { learnDirectory, renderLearnReport } = await import("./learn")
+    const id = identity()
+    const ctx = personalContext()
+    const root = process.argv[3] && !process.argv[3].startsWith("-") ? process.argv[3] : "."
+    console.log(`learning ${root} ...`)
+    const stats = await learnDirectory(ctx, id.userId, id.orgId, root, {
+      maxFiles: arg("--max-files") ? Number(arg("--max-files")) : undefined,
+      maxFileBytes: arg("--max-bytes") ? Number(arg("--max-bytes")) : undefined,
+      onProgress: (done, total, rel) => {
+        if (done % 25 === 0 || done === total) console.log(`  ${done}/${total}  ${rel}`)
+      },
+    })
+    console.log("\n" + renderLearnReport(stats))
+    if (has("--open")) {
+      const { renderGraphHtml } = await import("./graph-html")
+      const accessible = await ctx.graph.getAccessibleVirtualRecordIds({ userId: id.userId, orgId: id.orgId })
+      const g = ctx.graph.getKnowledgeGraph([...new Set(Object.values(accessible))] as string[])
+      const out = arg("--out", "chitta-graph.html")!
+      await Bun.write(out, renderGraphHtml(g, { title: `What Chitta learned from ${root}` }))
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open"
+      try { Bun.spawn([opener, out]) } catch { /* opening is best-effort */ }
+    }
+    ctx.store.close()
+    return
+  }
+
   // bench: run the memory benchmark framework (Tier A retrieval, + Tier B end-to-end QA when
   // an LLM is configured). Builds its own per-case contexts, so it needs no shared store.
   if (cmd === "bench") {
@@ -242,7 +273,7 @@ async function main() {
       break
     }
     default:
-      console.log("commands: doctor | sleep | graph [--out f] [--open] | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
+      console.log("commands: doctor | learn [dir] [--max-files N] [--open] | sleep | graph [--out f] [--open] | bench [synthetic|longmemeval|locomo] | user-add | group-add | member-add | ingest | query | rebuild-graph | reindex-vectors | audit [--verify|--tail N] | rekey --new-key <k>")
   }
   ctx.store.close()
 }

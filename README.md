@@ -11,7 +11,7 @@ and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per 
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-365%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-369%20passing-brightgreen" alt="Tests"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -151,6 +151,30 @@ Session 2 never saw session 1 run - it just opened the file, recalled the facts,
 graph. That's cross-session memory: **zero tokens, fully local**. Full walkthrough:
 [examples/agent-memory](examples/agent-memory/).
 
+## Learn an entire repository (60 seconds)
+
+Point it at a folder: code is parsed with tree-sitter (36 languages) into a code graph,
+docs into the concept graph - and unlike one-off repo analyzers, the result is **permanent
+memory** your agent recalls in every future session:
+
+```bash
+chitta learn .            # add --open to see the graph it built
+```
+
+```
+Chitta learned this repository
+
+  files        288 ingested (231 code · 57 docs) · 13 skipped (generated/binary/large)
+  languages    typescript 208 · markdown 57 · tsx 12 · json 5 · javascript 2 · bash 2 ...
+  graph        +288 records · +2524 concepts · +7520 relationships · 113 communities
+  time         12.0s · zero LLM tokens
+```
+
+Real run, this repo. Then ask your agent *"where is the security invariant enforced?"* -
+today or in three weeks - and it answers from this graph. Re-running supersedes each file's
+contribution (stable ids), so `chitta learn .` after a refactor just updates what changed.
+Also on the SDK: `await memory.learn("./my-repo")`.
+
 ## The team moat: permission-aware in 30 seconds
 
 When you *do* add teammates, the same store enforces who-can-see-what. Two users, one store,
@@ -262,6 +286,7 @@ opencode, Kiro, Amp, Factory, Kilo, Trae). Any other MCP client: `--print` and p
 
 ```bash
 chitta doctor                      # config + health: identity, encryption, ANN, audit, counts
+chitta learn . --open              # walk a repo → permanent memory (code graph + concepts) + report
 chitta graph --open                # → a self-contained interactive HTML of everything your agent remembers
 chitta sleep                       # sleep-time consolidation: dedupe entities, retire expired, re-weight
 chitta bench synthetic             # measure memory quality (retrieval + end-to-end QA) - see docs/BENCHMARKING.md
@@ -311,7 +336,7 @@ model** - the part most memory products treat as proprietary magic, here done na
 ```bash
 bun install
 bun start                         # boots the MCP server (stdio)
-bun test                          # 365 tests
+bun test                          # 369 tests
 bun run build                     # → dist/chitta (single binary)
 ```
 

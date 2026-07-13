@@ -384,6 +384,15 @@ export class Chitta {
     return this.me().graph
   }
 
+  /** Walk a directory and learn it permanently: code files are parsed into a code graph
+   *  (tree-sitter, 36 languages), docs into the concept graph - all recallable forever after.
+   *  Idempotent per file (stable record ids), zero LLM tokens. Returns honest stats. */
+  async learn(dir: string, opts: { maxFiles?: number; maxFileBytes?: number } = {}) {
+    const { learnDirectory } = await import("./embedded/learn")
+    const u = this.me()
+    return learnDirectory(this.ctx, u.userId, u.orgId, dir, opts)
+  }
+
   /** Export the full accessible knowledge graph as ONE self-contained, interactive HTML page -
    *  Chitta's shareable "what your agent remembers" artifact. Returns the HTML string; write it to
    *  a `.html` file and open in any browser (force-directed, colored by type, search + zoom). */
