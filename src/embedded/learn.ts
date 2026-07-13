@@ -34,9 +34,11 @@ export interface LearnStats {
   languages: Record<string, number>
   /** store-level deltas (records / entities / relation edges) from this learn run. */
   delta: { records: number; entities: number; relations: number }
-  /** most-connected concepts after the run (ACL-scoped), for the report. */
-  hubs: Array<{ label: string; degree: number }>
-  communities: number
+  /** the graph THIS walk produced (scoped to the learned records - a pre-populated
+   *  personal store must never leak its own hubs into a repo report). */
+  scoped: { concepts: number; relationships: number; clusters: number }
+  /** most-connected concepts of the learned subgraph, for the report. */
+  hubs: Array<{ label: string; type: string; degree: number }>
   ms: number
 }
 
@@ -142,6 +144,7 @@ export async function learnDirectory(
   skipped.overCap = files.length - toIngest.length
 
   const languages: Record<string, number> = {}
+  const learnedIds: string[] = []
   let codeFiles = 0
   let docFiles = 0
   let done = 0
@@ -151,13 +154,15 @@ export async function learnDirectory(
       skipped.binary++
       continue
     }
+    const recordId = `file:${f.rel}` // stable id ⇒ re-learn supersedes, never duplicates
     await ctx.authorizedIngest(userId, {
-      recordId: `file:${f.rel}`, // stable id ⇒ re-learn supersedes, never duplicates
+      recordId,
       orgId,
       recordName: f.rel, // the extension here is what routes code through tree-sitter
       text: buf.toString("utf8"),
       permittedPrincipals: [userId],
     })
+    learnedIds.push(recordId)
     languages[f.lang] = (languages[f.lang] ?? 0) + 1
     if (f.lang === "markdown" || f.lang === "text") docFiles++
     else codeFiles++
@@ -165,10 +170,35 @@ export async function learnDirectory(
     opts.onProgress?.(done, toIngest.length, f.rel)
   }
 
-  const [hubs, communities] = await Promise.all([
-    ctx.graphQuery.central(userId, orgId, 8),
-    ctx.graphQuery.communities(userId, orgId),
-  ])
+  // The report's graph shape comes from the LEARNED subgraph only - degree, hubs and
+  // clusters over exactly these records' entities and provenance-filtered relations.
+  const g = ctx.graph.getKnowledgeGraph(learnedIds)
+  const deg = new Map<string, number>()
+  for (const r of g.relations) {
+    deg.set(r.from, (deg.get(r.from) ?? 0) + 1)
+    deg.set(r.to, (deg.get(r.to) ?? 0) + 1)
+  }
+  const hubs = g.entities
+    .map((e) => ({ label: e.label, type: e.type, degree: deg.get(e.id) ?? 0 }))
+    .sort((a, b) => b.degree - a.degree)
+    .slice(0, 8)
+  // clusters = connected components (>= 2 nodes) of the learned subgraph, via union-find
+  const parent = new Map<string, string>()
+  const find = (x: string): string => {
+    let r = x
+    while (parent.get(r) !== undefined && parent.get(r) !== r) r = parent.get(r)!
+    parent.set(x, r)
+    return r
+  }
+  for (const r of g.relations) {
+    if (!parent.has(r.from)) parent.set(r.from, r.from)
+    if (!parent.has(r.to)) parent.set(r.to, r.to)
+    const a = find(r.from)
+    const b = find(r.to)
+    if (a !== b) parent.set(a, b)
+  }
+  const clusters = new Set([...parent.keys()].map(find)).size
+
   return {
     root,
     ingested: done,
@@ -181,8 +211,8 @@ export async function learnDirectory(
       entities: count("SELECT count(*) c FROM nodes WHERE coll='entities'") - before.entities,
       relations: count("SELECT count(*) c FROM edges WHERE label NOT IN ('mentions','permissions','belongsTo','inheritPermissions')") - before.relations,
     },
-    hubs: hubs.map((h) => ({ label: h.label, degree: h.degree })).sort((a, b) => b.degree - a.degree),
-    communities: Array.isArray(communities) ? communities.length : 0,
+    scoped: { concepts: g.entities.length, relationships: g.relations.length, clusters },
+    hubs,
     ms: performance.now() - t0,
   }
 }
@@ -196,17 +226,18 @@ export function renderLearnReport(s: LearnStats): string {
   const skippedTotal = s.skipped.large + s.skipped.binary + s.skipped.other + s.skipped.overCap
   const maxDeg = Math.max(1, ...s.hubs.map((h) => h.degree))
   const bar = (d: number): string => "▮".repeat(Math.max(1, Math.round((d / maxDeg) * 6)))
+  const tag = (t: string): string => (t && t !== "CONCEPT" ? ` (${t.toLowerCase()})` : "")
   const lines = [
     `Chitta learned ${s.root === "." ? "this repository" : s.root}`,
     "",
     `  files        ${s.ingested} ingested (${s.codeFiles} code · ${s.docFiles} docs) · ${skippedTotal} skipped (generated/binary/large)${s.skipped.overCap ? ` · ${s.skipped.overCap} over --max-files` : ""}`,
     `  languages    ${langs || "(none)"}`,
-    `  graph        +${s.delta.records} records · +${s.delta.entities} concepts · +${s.delta.relations} relationships · ${s.communities} communities`,
+    `  this repo    ${s.scoped.concepts} concepts · ${s.scoped.relationships} relationships · ${s.scoped.clusters} clusters (+${s.delta.records} new records in the store)`,
     `  time         ${(s.ms / 1000).toFixed(1)}s · zero LLM tokens`,
   ]
-  if (s.hubs.length > 0) {
-    lines.push("", "  Most-connected concepts")
-    for (const h of s.hubs.slice(0, 6)) lines.push(`    ${bar(h.degree)} ${h.label} · ${h.degree}`)
+  if (s.hubs.length > 0 && s.hubs[0].degree > 0) {
+    lines.push("", "  Most-connected in this repo")
+    for (const h of s.hubs.slice(0, 6)) lines.push(`    ${bar(h.degree)} ${h.label}${tag(h.type)} · ${h.degree}`)
     const [a, b] = s.hubs
     lines.push(
       "",

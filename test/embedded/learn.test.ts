@@ -55,6 +55,10 @@ describe("chitta learn", () => {
     const labels = g.entities.map((e) => e.label)
     expect(labels).toContain("Billing") // tree-sitter class node from app.py
     expect(labels).toContain("app.py") // the FILE node itself
+    // ...and the stats' own scoped graph saw the code symbols too (this is the assertion
+    // that catches the grammar dir failing to resolve - extraction must not silently no-op)
+    expect(stats.scoped.relationships).toBeGreaterThan(0)
+    expect(stats.hubs.some((h) => h.label === "Billing" || h.label === "app.py")).toBe(true)
     // the doc landed as recallable memory too
     const res = await ctx.searchWithGraph("who acquired Globex", "u", "o")
     expect(res.searchResults.some((r) => r.content.includes("Acme"))).toBe(true)
@@ -63,6 +67,22 @@ describe("chitta learn", () => {
     const report = renderLearnReport(stats)
     expect(report).toContain("2 ingested (1 code · 1 docs)")
     expect(report).toContain("python 1")
+    ctx.store.close()
+  })
+
+  test("report hubs are scoped to the WALK - a pre-populated store must not leak into them", async () => {
+    const ctx = mk()
+    // long-lived personal memory with a heavily-connected unrelated entity
+    for (let i = 0; i < 5; i++)
+      await ctx.authorizedIngest("u", {
+        recordId: `old-${i}`, orgId: "o", recordName: `old-${i}`,
+        text: `Richard Feynman taught physics lecture ${i}.`, permittedPrincipals: ["u"],
+        entities: [{ name: "Richard Feynman", type: "PERSON" }, { name: `Lecture ${i}`, type: "EVENT" }],
+        relations: [{ from: "Richard Feynman", to: `Lecture ${i}`, type: "taught" }],
+      })
+    const stats = await learnDirectory(ctx, "u", "o", root)
+    expect(stats.hubs.length).toBeGreaterThan(0)
+    expect(stats.hubs.some((h) => h.label === "Richard Feynman")).toBe(false) // old memory stays out
     ctx.store.close()
   })
 

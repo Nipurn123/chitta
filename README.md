@@ -166,8 +166,8 @@ Chitta learned this repository
 
   files        288 ingested (231 code · 57 docs) · 13 skipped (generated/binary/large)
   languages    typescript 208 · markdown 57 · tsx 12 · json 5 · javascript 2 · bash 2 ...
-  graph        +288 records · +2524 concepts · +7520 relationships · 113 communities
-  time         12.0s · zero LLM tokens
+  this repo    2528 concepts · 7535 relationships · 53 clusters (+288 new records in the store)
+  time         11.3s · zero LLM tokens
 ```
 
 Real run, this repo. Then ask your agent *"where is the security invariant enforced?"* -

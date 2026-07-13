@@ -16,12 +16,25 @@
 // Re-exported from code-extractor.ts to preserve original import paths.
 
 import { fileURLToPath } from "node:url"
+import { createRequire } from "node:module"
+import { dirname, join, sep } from "node:path"
 import type { Extraction, ExtractedEntity, ExtractedRelation, KnowledgeExtractor } from "./types"
 import { slugify } from "./text-hygiene"
 
-// NB: this module lives one directory deeper than the original code-extractor.ts, so
-// the relative path to node_modules gains one extra `../` to resolve identically.
-const WASM_DIR = fileURLToPath(new URL("../../../node_modules/tree-sitter-wasms/out/", import.meta.url))
+// Locate the grammar wasms through MODULE RESOLUTION, not a fixed relative path: under
+// npm/bun install layouts (bunx, global, nested dep) hoisting moves tree-sitter-wasms out
+// of this package's own node_modules, so "../../../node_modules/..." only worked in a repo
+// clone - and the loader's graceful degradation silently turned code extraction into a
+// no-op everywhere else. require.resolve walks the real resolution chain instead. The old
+// relative path stays as a fallback for exotic layouts without a resolvable package.json.
+const WASM_DIR = (() => {
+  try {
+    const req = createRequire(import.meta.url)
+    return join(dirname(req.resolve("tree-sitter-wasms/package.json")), "out") + sep
+  } catch {
+    return fileURLToPath(new URL("../../../node_modules/tree-sitter-wasms/out/", import.meta.url))
+  }
+})()
 
 // All 36 grammars shipped by tree-sitter-wasms (grammar name → wasm file stem).
 const GRAMMARS = [

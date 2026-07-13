@@ -8,6 +8,22 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.4.2] - 2026-07-13
+
+### Fixed
+- **Code extraction silently no-opped in every npm-installed layout.** The tree-sitter
+  grammar directory was located by a fixed relative path that only exists in a repo clone;
+  under bunx / global / node_modules installs, hoisting moved `tree-sitter-wasms` elsewhere,
+  the loader failed, and graceful degradation turned the code graph into an empty result
+  with no error. Grammars are now located through real module resolution
+  (`require.resolve`), with the old path kept as a fallback. Field-reported: a 33-code-file
+  repo produced 16 concepts; the same walk now produces the full code graph.
+- **`chitta learn` report was computed over the whole store, not the walk.** On a
+  pre-populated personal store, "most-connected concepts" showed your old memories instead
+  of the repo just learned. Hubs, relationship counts and clusters now come from the learned
+  subgraph only (typed hub labels: `Billing (class)`, `app.py (file)`), and the store-growth
+  delta is reported separately.
+
 ## [0.4.1] - 2026-07-13
 
 ### Fixed
