@@ -72,13 +72,28 @@ async function main() {
     const rerank = !/^(0|false|off)$/i.test(process.env.CONTEXT_RERANK ?? "")
     const count = (sql: string) => (s.db.query(sql).get() as { c: number }).c
     const ok = (b: boolean) => (b ? "\x1b[32m✓\x1b[0m" : "\x1b[2m-\x1b[0m")
+    // Report the embedder that will ACTUALLY run, not just the configured mode - hash vs real
+    // is the single biggest driver of recall quality, and silent hash-fallback (transformers
+    // missing) is the trap this line exists to expose.
+    let tfAvail = false
+    try {
+      ;(await import("node:module")).createRequire(import.meta.url).resolve("@huggingface/transformers")
+      tfAvail = true
+    } catch { /* not resolvable → hash fallback */ }
+    const embMode = (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()
+    const embReal = embMode !== "hash" && tfAvail
+    const embDesc = embMode === "hash"
+      ? "hash (lexical, offline, instant)"
+      : embReal
+        ? `real semantic - ${process.env.CONTEXT_EMBED_MODEL || "bge-small"} (downloads once)`
+        : "hash FALLBACK - real embeddings unavailable; run: bun add @huggingface/transformers"
     const lines = [
       "Chitta - configuration & health\n",
       `  identity     user=${id.userId}  org=${id.orgId}  role=${id.role}${id.groups.length ? `  groups=${id.groups.join(",")}` : ""}`,
       `  storage      ${personalContextPath()}`,
       `  ${ok(enc)} encryption  ${enc ? "ON (libSQL AES-256 at rest)" : "off - enable with: chitta install --db-key <key>"}`,
       `  ${ok(s.annEnabled)} vector ANN  ${s.annEnabled ? "on (index active)" : "brute-force cosine (no ANN index loaded)"}`,
-      `  ${ok(true)} embeddings  ${(process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()}${process.env.CONTEXT_EMBED_MODEL ? ` (${process.env.CONTEXT_EMBED_MODEL})` : ""}`,
+      `  ${ok(embReal || embMode === "hash")} embeddings  ${embDesc}`,
       `  ${ok(rerank)} reranker    ${rerank ? "on (cross-encoder, lazy)" : "off"}`,
       `  ${ok(audit)} audit log   ${audit ? "ON (append-only, tamper-evident)" : "off - enable with: CHITTA_AUDIT=1"}`,
       `  ${ok(!!process.env.CONTEXT_MEMORY_TTL_DAYS)} memory TTL  ${process.env.CONTEXT_MEMORY_TTL_DAYS ? `${process.env.CONTEXT_MEMORY_TTL_DAYS} days` : "none (memories don't auto-expire)"}`,

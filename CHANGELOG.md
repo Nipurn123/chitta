@@ -8,6 +8,21 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.6.0] - 2026-07-13
+
+### Changed
+- **Real semantic embeddings (`bge-small`) are now the DEFAULT.** `@huggingface/transformers` is
+  bundled (as an optionalDependency), so a default install does genuine semantic retrieval instead
+  of silently falling back to the lexical keyword-hash embedder. This is the configuration the
+  published benchmarks (0.552 LoCoMo recall@10, with the cross-encoder reranker) are measured with;
+  the old default matched keywords, not meaning, and gave far weaker recall on natural-language
+  queries. The model downloads once on first use. `CONTEXT_EMBEDDINGS=hash` keeps the previous
+  instant, fully-offline lexical mode.
+  - **Migration:** a store is tied to the embedder that built it. After upgrading, re-embed an
+    existing (hash-built) store with `chitta reindex-vectors`, or start a fresh `chitta learn`.
+- `chitta doctor` now reports the embedder that will **actually run** (real semantic vs a silent
+  hash fallback when transformers is unavailable), not just the configured mode.
+
 ## [0.5.0] - 2026-07-13
 
 The launch release: the whole 0.4.x line - repository learning (`chitta learn`), the visible

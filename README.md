@@ -254,10 +254,13 @@ Other: `--project` (project-scoped) · `--list` · `uninstall`.
 bunx @100xprompt/chitta doctor   # identity, storage, encryption, ANN, audit, embeddings, counts
 ```
 
-**Optional extras** (kept out of the default install so `bunx` stays lightweight - the core
-runs great with the built-in fast hashing embedder):
-- Real semantic embeddings: `bun add @huggingface/transformers` then set `CONTEXT_EMBEDDINGS=real`
-  (the default `auto` already uses them when present, else falls back to hashing).
+**Embeddings.** Real semantic embeddings (`bge-small`) are the **default** - the model downloads
+once on first use, and every recall is genuinely semantic (this is the config the benchmarks above
+are measured with). For a fully-offline, instant, lower-quality mode set `CONTEXT_EMBEDDINGS=hash`
+(a deterministic keyword-hash embedder, no download). Pick one and stay on it: a store is tied to
+the embedder that built it, so switching means a `chitta reindex-vectors`.
+
+**Optional extras:**
 - Encryption at rest: `bun add libsql` then set `CONTEXT_DB_KEY=<key>` (transparent AES whole-file).
 
 **Supported tools (17):** Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Windsurf,
