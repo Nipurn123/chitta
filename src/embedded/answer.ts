@@ -163,7 +163,7 @@ export function localAnswerer(modelPath: string): Promise<Answerer> {
       const model = await llama.loadModel({ modelPath })
       return {
         kind: "local",
-        label: `${path.basename(modelPath)} (in-process)`,
+        label: `${path.basename(modelPath).replace(/\.gguf$/i, "")} (in-process)`,
         generate: async (system, user, onToken) => {
           // Fresh context per question: creation is milliseconds (the load above is the
           // expensive part) and it guarantees no state bleeds between questions.
@@ -230,6 +230,19 @@ const PROMPT_CHARS = 4000 // total notes budget
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim()
 
+// Internal record/entity ids (mem-…, rec-…, file:…, chunk#n, raw hashes) are meaningless to a
+// human AND, worse, when fed into the prompt a small model echoes them into its answer
+// ("[1] (mem-abc…) Elon Musk lives in Texas"). A note's source label is only worth showing when
+// it is a real human name (a filename, a titled record); otherwise drop it. Applied at the
+// source so both the model prompt and the CLI citation footer stay clean.
+const idLike = (p: string): boolean =>
+  /^(mem|rec)-[a-z0-9-]+$/i.test(p) || /^file:/i.test(p) || /#\d+$/.test(p) || /^[0-9a-f]{8,}(-[0-9a-f]+)*$/i.test(p)
+function cleanSourceName(name?: string): string | undefined {
+  if (!name) return undefined
+  const human = name.split(",").map((p) => p.trim()).filter((p) => p && !idLike(p))
+  return human.length ? human.join(", ") : undefined
+}
+
 /** Gather the numbered evidence for a question - the SAME zero-token retrieval the rest of
  *  Chitta runs, flattened into notes: the typed graph's exact answer first (highest precision),
  *  then the current atomic facts (belief-revised - superseded truths are already gone), then
@@ -259,11 +272,11 @@ export async function gatherAskContext(
     notes.push({ n: notes.length + 1, kind, text: t, name })
   }
 
-  if (exact) for (const f of exact.facts.slice(0, 3)) push("graph", f, exact.citations.join(", ") || undefined)
+  if (exact) for (const f of exact.facts.slice(0, 3)) push("graph", f, cleanSourceName(exact.citations.join(", ")))
   for (const f of facts) push("fact", f.memory)
   for (const r of search.searchResults) {
     const m = r.metadata as { recordName?: string }
-    push("snippet", r.content, m?.recordName)
+    push("snippet", r.content, cleanSourceName(m?.recordName))
   }
   return notes
 }

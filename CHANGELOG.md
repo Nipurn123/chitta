@@ -8,6 +8,17 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.7.2] - 2026-07-13
+
+### Fixed
+- **`ask` citations leaked internal record ids.** Graph/snippet notes carried raw ids
+  (`mem-…`, `rec-…`, `file:…`) as their source label, which cluttered the CLI citation footer
+  and - because those labels are fed into the model prompt - made a small model sometimes echo
+  them into its answer ("[1] (mem-abc…) Elon Musk lives in Texas"). A note's source label is now
+  shown only when it is a real human name (a filename, a titled record); internal ids are
+  stripped at the source, so both the prompt and the footer stay clean. Footer also reads
+  "N memories" (proper plural) and drops the `.gguf` suffix from the model label. (391 tests.)
+
 ## [0.7.1] - 2026-07-13
 
 ### Fixed

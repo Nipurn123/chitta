@@ -378,9 +378,10 @@ async function main() {
         break
       }
       const secs = ((performance.now() - t0) / 1000).toFixed(1)
+      const n = res.sources.length
       process.stdout.write("\n")
-      console.log(`\x1b[2m\n  grounded on ${res.sources.length} note(s) · ${res.model} · ${secs}s\x1b[0m`)
-      for (const s of res.sources) console.log(`\x1b[2m  [${s.n}] ${s.kind.padEnd(7)} ${s.text.slice(0, 100)}${s.name ? ` (${s.name})` : ""}\x1b[0m`)
+      console.log(`\x1b[2m\n  grounded on ${n} ${n === 1 ? "memory" : "memories"} · ${res.model} · ${secs}s\x1b[0m`)
+      for (const s of res.sources) console.log(`\x1b[2m  [${s.n}] ${s.kind.padEnd(7)} ${s.text.slice(0, 100)}${s.name ? `  (${s.name})` : ""}\x1b[0m`)
       break
     }
     case "rebuild-graph": {

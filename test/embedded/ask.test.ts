@@ -207,6 +207,32 @@ describe("buildAskPrompt", () => {
   })
 })
 
+describe("citation hygiene: internal ids never reach the prompt or footer", () => {
+  test("graph notes with only record-id citations carry no source name", async () => {
+    // the exact shape from a real store: KGQA citations are internal record ids
+    const ctx = await muskStore()
+    const notes = await gatherAskContext(ctx, "u", "o", "Where does Elon Musk live?")
+    for (const g of notes.filter((x) => x.kind === "graph")) {
+      expect(g.name ?? "").not.toMatch(/mem-|rec-|file:/i) // no id leakage
+    }
+    // and so the model prompt is clean - no "(mem-…)" for it to echo into the answer
+    const { user } = buildAskPrompt("q", notes)
+    expect(user).not.toMatch(/mem-[a-z0-9]/i)
+    ctx.store.close()
+  })
+
+  test("a real human record name IS kept", async () => {
+    const ctx = mk()
+    await ctx.authorizedIngest("u", {
+      recordId: "r1", orgId: "o", recordName: "billing-runbook.md", permittedPrincipals: ["u"],
+      text: "The billing service charges customers monthly on the 1st.",
+    })
+    const notes = await gatherAskContext(ctx, "u", "o", "when does billing charge?")
+    expect(notes.some((x) => x.name === "billing-runbook.md")).toBe(true)
+    ctx.store.close()
+  })
+})
+
 describe("remote answerer (OpenAI-compatible)", () => {
   const requests: Array<{ path: string; auth: string | null; body: any }> = []
   const server = Bun.serve({
