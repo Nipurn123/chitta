@@ -8,6 +8,52 @@ semantic versioning once it reaches 1.0.
 
 _Nothing yet._
 
+## [0.4.0] - 2026-07-13
+
+The "advanced memory" release: the graph you can see, memory that learns from use, multi-agent
+perspectives, million-vector scale, and an MCP surface that speaks up - all still zero-token.
+
+### Added
+- **`chitta graph --open`** (CLI) and **`Chitta.graphHtml()`** (SDK) - render the accessible
+  knowledge graph to ONE self-contained interactive HTML file (force-directed, colored by type,
+  sized by degree, search / zoom / hover). Safe to share: no CDN, no requests, XSS-escaped.
+- **Usage-reinforced memory strength** - recalled memories strengthen (`use_count`,
+  `last_used_at`; safe migration for existing DBs) and ranking becomes recency x frequency x
+  importance with an exponential half-life (`CONTEXT_MEMORY_HALFLIFE_DAYS`, default 30).
+  Weak memories are outranked, never deleted; `CONTEXT_MEMORY_REINFORCE=0` restores the
+  legacy ordering byte-for-byte.
+- **Working memory** (`WorkingMemory`) - a session-scoped tier whose `consolidate()` promotes
+  only what survived the session (repeated, marked important, or referenced twice - deterministic,
+  no LLM) through the existing belief-revision path; the rest is dropped, stale sessions expire
+  (`CONTEXT_WM_TTL_HOURS`, default 24).
+- **Multi-agent memory perspectives** - `chitta.agent(id)` (namespaced `agent:` principals),
+  `chitta.team(id, { agents })`, `shareWithTeam`, and `chitta.perspectives.diff(a, b)` /
+  `.shared([...])` - belief set-operations over each principal's provenance-filtered subgraph.
+  The multi-tenant ACL applied to agents; no new machinery.
+- **PPR multi-hop retrieval** (`CONTEXT_GRAPH_PPR`, default off) - HippoRAG-style Personalized
+  PageRank over the typed entity graph, fail-closed on the same ACL provenance invariant, fused
+  as a 4th RRF leg. Off by default because full LoCoMo Tier-A measurement showed neutral there
+  (its multi-hop questions are a 1-hop ranking problem); the synthetic suite proves it reaches
+  3-hop evidence the bounded hop cannot. Enable for corpora with genuine typed chains.
+- **Self-calibrating two-stage vector search** - stage 1 scans prefix-renormalized embedding
+  prefixes (optionally int8 via `CONTEXT_VEC_INT8`) and stage 2 rescores the shortlist at full
+  dimension, with per-corpus recall calibration (target >= 0.95). Measured: 500K vectors
+  1,754ms -> 145ms (12.1x) at recall 1.000; auto-off below ~4K rows.
+- **MCP intelligence surface** - `context_ingest` responses announce belief revisions
+  ("note: this superseded a previous belief..."); read-only MCP **resources**
+  (`memory://graph`, `memory://stats`, `memory://profile/{entity}`, ACL-filtered and audited);
+  new **`context_health`** tool (store stats, memory kinds, engine status, top concepts).
+- Community health: `CODE_OF_CONDUCT.md`, Dependabot config (with honest pins), seeded
+  good-first-issues, launch docs under `docs/launch/`.
+
+### Changed
+- `actions/checkout` v4 -> v7 across workflows; the publish workflow now skips gracefully (with
+  a loud warning) when `NPM_TOKEN` is not configured instead of failing the release red.
+- Code extractor speaks both web-tree-sitter APIs (<=0.24 and >=0.25); the dependency stays
+  pinned at 0.24.7 because every published grammar bundle (tree-sitter-wasms <= 0.1.13) is
+  rejected by the 0.25+ loader - upgrading becomes a one-line bump once a compatible bundle
+  ships.
+
 ## [0.3.0] - 2026-07-12
 
 This cycle makes Chitta an embeddable, production-ready memory layer and proves it **scales**.

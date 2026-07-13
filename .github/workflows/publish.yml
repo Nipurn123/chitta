@@ -31,10 +31,19 @@ jobs:
       # Write the npm token into ~/.npmrc so `bun publish` can authenticate.
       # The shell expands ${NPM_TOKEN} at write time, so the real token value
       # lands in the file (no reliance on bun expanding env vars inside .npmrc).
+      # Skips (with a loud warning, keeping the run green) when the NPM_TOKEN
+      # secret is not configured - e.g. a release cut before CI publishing is
+      # set up, or one already published manually with `bun publish`.
       - name: Configure npm registry auth
+        if: ${{ secrets.NPM_TOKEN != '' }}
         run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
+        if: ${{ secrets.NPM_TOKEN != '' }}
         run: bun publish --access public
+
+      - name: Publish skipped (no NPM_TOKEN)
+        if: ${{ secrets.NPM_TOKEN == '' }}
+        run: echo "::warning::NPM_TOKEN secret not configured - tests ran green but npm publish was SKIPPED. Add the secret (Settings -> Secrets -> Actions -> NPM_TOKEN) or publish manually with 'bun publish --access public'."
