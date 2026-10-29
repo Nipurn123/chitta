@@ -74,14 +74,33 @@ export interface RetrievedContext {
  *  stub in tests. `answer` responds to the question FROM the retrieved context only;
  *  `judge` decides whether a prediction matches the gold answer (LLM-as-judge). */
 export interface BenchLlm {
-  answer(question: string, context: string): Promise<string>
-  judge(question: string, gold: string, predicted: string): Promise<boolean>
+  answer(question: string, context: string, opts?: AnswerOptions): Promise<string>
+  judge(question: string, gold: string, predicted: string, opts?: JudgeOptions): Promise<boolean>
+}
+
+export interface AnswerOptions {
+  /** When the question is asked - the reader needs it for "how long ago" questions. */
+  questionDate?: string
+}
+
+export interface JudgeOptions {
+  /** The dataset's question type (LongMemEval) - selects that type's grading rule. */
+  questionType?: string
+  /** The question is unanswerable; correct iff the prediction says so. */
+  abstention?: boolean
+}
+
+/** Per-answer callback (e.g. to write a hypotheses file for an external/official scorer) and how
+ *  many questions to answer + judge at once (default 1). */
+export interface QaHooks {
+  onAnswer?: (question: BenchQuestion, predicted: string, correct: boolean) => void
+  concurrency?: number
 }
 
 /** Score Tier B over the retrieved contexts with the given LLM → per-category + overall
  *  accuracy. Implemented in bench/qa.ts; injected into the runner so the spine has no hard
  *  dependency on the LLM path. */
-export type ScoreQaFn = (retrieved: RetrievedContext[], llm: BenchLlm) => Promise<QaScore[]>
+export type ScoreQaFn = (retrieved: RetrievedContext[], llm: BenchLlm, hooks?: QaHooks) => Promise<QaScore[]>
 
 /** Rough token estimate (≈ chars/4, the standard GPT heuristic) - dependency-free, good
  *  enough for the reduction ratio + budgeting. Shared so every module counts identically. */

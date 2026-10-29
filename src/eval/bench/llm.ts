@@ -11,7 +11,7 @@
 //  - judge(): LLM-as-judge grading a prediction against the gold answer SEMANTICALLY
 //    (a paraphrase is correct), which string equality could never do.
 
-import type { BenchLlm } from "./types"
+import type { AnswerOptions, BenchLlm, JudgeOptions } from "./types"
 
 export interface HttpBenchLlmConfig {
   /** OpenAI-compatible base, e.g. http://localhost:8000 (matches LlmExtractorConfig.endpoint). */
@@ -44,6 +44,35 @@ const JUDGE_SYSTEM = [
   "It is incorrect only if the prediction is factually wrong, contradicts the gold, or fails to answer.",
   'Reply with a SINGLE word: "CORRECT" or "INCORRECT". No punctuation, no explanation.',
 ].join(" ")
+
+// Time questions ("how many days ago", "last month") are relative to when they're asked.
+const ANSWER_TIME_NOTE =
+  " The CURRENT DATE is given; for questions about time (how long ago, which came first, last month) reason from it and the dates in the CONTEXT."
+
+// LongMemEval's grading rule per question type - the same rules its official
+// src/evaluation/evaluate_qa.py applies (worded here, not copied). Used only when the dataset
+// supplies its question type. For a publishable number, write the answers with --hyps and score
+// them with that official script and GPT-4o.
+const LME_STRICT =
+  "The prediction is CORRECT if it contains the gold answer, is equivalent to it, or contains all the intermediate steps that lead to it. It is INCORRECT if it gives only part of the information the gold answer requires."
+function lmeRule(o: JudgeOptions): string {
+  if (o.abstention)
+    return "The question is UNANSWERABLE from the user's history and GOLD explains why. The prediction is CORRECT only if it identifies the question as unanswerable (the information is missing or incomplete, or only other information is available)."
+  switch (o.questionType) {
+    case "single-session-preference":
+      return "GOLD is a RUBRIC describing a good personalized response, not an exact answer. The prediction is CORRECT if it recalls and uses the user's personal information correctly; it need not cover every rubric point."
+    case "temporal-reasoning":
+      return `${LME_STRICT} Do not penalize off-by-one errors in counts of days, weeks or months (19 days when the answer is 18 is CORRECT).`
+    case "knowledge-update":
+      return `${LME_STRICT} If the prediction gives earlier information together with the updated answer, it is CORRECT as long as the updated answer is the required one.`
+    default:
+      return LME_STRICT
+  }
+}
+function judgeSystem(o?: JudgeOptions): string {
+  if (!o?.questionType && !o?.abstention) return JUDGE_SYSTEM
+  return `You are grading a PREDICTED answer against a GOLD answer for a QUESTION. ${lmeRule(o)} Reply with a SINGLE word: "CORRECT" or "INCORRECT". No punctuation, no explanation.`
+}
 
 export class HttpBenchLlm implements BenchLlm {
   private readonly fetch: typeof fetch
@@ -86,19 +115,23 @@ export class HttpBenchLlm implements BenchLlm {
     return body.choices?.[0]?.message?.content ?? ""
   }
 
-  async answer(question: string, context: string): Promise<string> {
-    const user = `CONTEXT:\n${context}\n\nQUESTION: ${question}`
-    const out = await this.chat(this.answerModel, ANSWER_SYSTEM, user)
+  async answer(question: string, context: string, opts?: AnswerOptions): Promise<string> {
+    const date = opts?.questionDate
+    const user = `${date ? `CURRENT DATE: ${date}\n\n` : ""}CONTEXT:\n${context}\n\nQUESTION: ${question}`
+    const out = await this.chat(this.answerModel, date ? ANSWER_SYSTEM + ANSWER_TIME_NOTE : ANSWER_SYSTEM, user)
     return out.trim()
   }
 
-  async judge(question: string, gold: string, predicted: string): Promise<boolean> {
+  async judge(question: string, gold: string, predicted: string, opts?: JudgeOptions): Promise<boolean> {
     const user = `QUESTION: ${question}\nGOLD ANSWER: ${gold}\nPREDICTED ANSWER: ${predicted}`
-    const out = await this.chat(this.judgeModel, JUDGE_SYSTEM, user)
+    const out = await this.chat(this.judgeModel, judgeSystem(opts), user)
     // "INCORRECT" contains "CORRECT", so check the negative first.
     const verdict = out.toUpperCase()
     if (verdict.includes("INCORRECT")) return false
-    return verdict.includes("CORRECT")
+    if (verdict.includes("CORRECT")) return true
+    // No verdict at all (a failed or empty call) is not a grade - throw, so a failed judge call
+    // can't silently mark a right answer wrong. Callers that want "wrong" catch it.
+    throw new Error("judge returned no verdict")
   }
 }
 

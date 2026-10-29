@@ -34,6 +34,8 @@ export async function ingestCase(
       permittedPrincipals: [userId],
       entities: item.entities,
       relations: item.relations,
+      occurredAt: item.timestamp,
+      facts: item.facts,
     })
   }
   return { ingestMs: performance.now() - t0, fullHistoryTokens }

@@ -52,7 +52,7 @@ describe("cross-encoder blend (recall-preserving rerank)", () => {
   const fresh = (): FusedResult[] => [mk("gold", "alpha GOLDDOC beta", 0.05), mk("a", "alpha distractor one", 0.03), mk("b", "alpha distractor two", 0.02)]
 
   test("pure rerank demotes a mis-scored strong-RRF item; blend keeps it near the top", async () => {
-    delete process.env.CONTEXT_RERANK_BLEND
+    process.env.CONTEXT_RERANK_BLEND = "0"
     const pure = await rerankStage(stub, "alpha", fresh(), 0)
     const pureIds = pure.ordered.map((r) => r.metadata.recordId as string)
     expect(pure.rerankerUsed).toBe(true)
@@ -64,5 +64,23 @@ describe("cross-encoder blend (recall-preserving rerank)", () => {
     delete process.env.CONTEXT_RERANK_BLEND
     expect(blendIds.indexOf("gold")).toBeLessThan(pureIds.indexOf("gold")) // blend rescues it
     expect(blendIds[blendIds.length - 1]).not.toBe("gold") // no longer buried last
+  })
+
+  test("blend is the default (best recall on pooled LongMemEval)", async () => {
+    delete process.env.CONTEXT_RERANK_BLEND
+    const ids = (await rerankStage(stub, "alpha", fresh(), 0)).ordered.map((r) => r.metadata.recordId as string)
+    expect(ids[ids.length - 1]).not.toBe("gold") // the pure order would bury it last
+  })
+
+  test("candidates are one chunk per record, so K reaches K distinct records", async () => {
+    process.env.CONTEXT_RERANK_K = "2"
+    const seen: string[][] = []
+    const spy = { rank: async (_q: string, docs: string[]) => (seen.push(docs), docs.map(() => 0.5)) }
+    // record "a" holds the top two chunks; "b" is third
+    const merged = [mk("a", "alpha a-one", 0.05), mk("a", "alpha a-two", 0.04), mk("b", "alpha b-one", 0.03)]
+    const { ordered } = await rerankStage(spy, "alpha", merged, 0)
+    delete process.env.CONTEXT_RERANK_K
+    expect(seen[0]).toEqual(["alpha a-one", "alpha b-one"]) // a's 2nd chunk didn't take b's slot
+    expect(ordered.map((r) => r.content)).toContain("alpha a-two") // not dropped - kept after
   })
 })

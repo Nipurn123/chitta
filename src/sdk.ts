@@ -67,6 +67,11 @@ export interface RememberOptions {
   episodes?: Array<{ event: string; occurredAt?: number | string; actors?: string[] }>
   /** Learned how-tos / preferences → procedural memory (trigger → action, supersedes on change). */
   procedures?: Array<{ trigger?: string; action: string }>
+  /** Short self-contained facts the text states - each becomes an extra search key for it. */
+  facts?: string[]
+  /** When the content happened (e.g. a conversation's date) - dates its passages and lets
+   *  "last week" / "a month ago" questions find it. */
+  occurredAt?: number | string
 }
 
 export interface Recalled {
@@ -158,6 +163,8 @@ export class ChittaUser {
       relations: opts.relations,
       episodes: opts.episodes,
       procedures: opts.procedures,
+      facts: opts.facts,
+      occurredAt: opts.occurredAt,
     })
     this.emit("remember", t0)
     return { id }

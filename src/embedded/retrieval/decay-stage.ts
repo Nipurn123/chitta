@@ -9,6 +9,10 @@
 // MEMORY DECAY / SALIENCE (Generative-Agents / ACT-R): gently re-weight by recency
 // × access-frequency × importance so fresh/important/often-used memories surface
 // over stale ones - NEVER deletes. Records with no timestamp (legacy) stay neutral.
+// An "access" is a real use (markUsed: e.g. a source an answer cited), never a mere
+// retrieval - when every search counted, each query boosted what it returned and biased
+// the next (-7.9 points all-gold@10 on pooled LongMemEval). The access boost is also
+// capped (×1.15 by default), so heavy use buys a record a modest lift, not an unbounded one.
 import type { SqliteStore } from "../sqlite-store"
 import type { FusedResult } from "./fuse"
 
@@ -19,6 +23,8 @@ export interface DecayConfig {
   lambda: number
   decayFloor: number
   accessW: number
+  accessCap: number
+  importanceW: number
   validity: boolean
   validityPenalty: number
 }
@@ -32,6 +38,14 @@ export function decayConfig(): DecayConfig {
     lambda: Math.LN2 / Math.max(1, Number(process.env.CONTEXT_DECAY_HALFLIFE_DAYS ?? 60)),
     decayFloor: Number(process.env.CONTEXT_DECAY_FLOOR ?? 0.5),
     accessW: Number(process.env.CONTEXT_DECAY_ACCESS_W ?? 0.15),
+    accessCap: Number(process.env.CONTEXT_DECAY_ACCESS_CAP ?? 1.15), // ≈ 2 uses; more adds nothing
+    // How much write-time importance (0.5..3, ingest.ts computeImportance) moves the ranking:
+    // factor = 1 + w·(importance − 1). Default 0: importance comes from cue words ("important",
+    // "must", "deal"...) and entity counts that long chat sessions trip at random, and fused
+    // scores of neighbouring results sit ~1% apart - at full weight (w=1, the old behaviour) the
+    // heuristic out-ranked relevance (pooled LongMemEval all-gold@10, no reranker: 64.0% vs 67.2%
+    // without it). Importance stays on the record for sleep/corroboration and the memory layer.
+    importanceW: Number(process.env.CONTEXT_IMPORTANCE_W ?? 0),
     // Temporal-validity retrieval (Zep's edge, deterministic): down-rank a record that asserted
     // a fact that has since been SUPERSEDED, so the CURRENT-truth record wins. Default on.
     validity: !/^(0|false|off)$/i.test(process.env.CONTEXT_VALIDITY ?? "1"),
@@ -75,10 +89,15 @@ export function decayStage(store: SqliteStore, merged: FusedResult[], userId: st
     if (ownerMap.get(r.metadata.recordId as string) === userId) r.rrf *= cfg.personalBoost
     const s = salience?.get(r.metadata.recordId as string)
     if (s && s.lastAccessedAt > 0) {
-      const ageDays = Math.max(0, (now - s.lastAccessedAt) / 86_400_000)
+      // WHOLE days: recency is a days-to-months signal (60-day half-life). At millisecond
+      // resolution, records stored minutes apart got factors differing by ~1e-4 - enough to break
+      // every EXACT RRF tie (common: two items each found by one leg at the same rank) by storage
+      // order instead of the fused order, which cost 3.2 points all-gold@10 on pooled LongMemEval.
+      const ageDays = Math.floor(Math.max(0, now - s.lastAccessedAt) / 86_400_000)
       const recency = Math.exp(-cfg.lambda * ageDays)
-      const accessBoost = 1 + cfg.accessW * Math.log1p(s.accessCount)
-      r.rrf *= (s.importance || 1) * (cfg.decayFloor + (1 - cfg.decayFloor) * recency) * accessBoost
+      const accessBoost = Math.min(1 + cfg.accessW * Math.log1p(s.accessCount), cfg.accessCap)
+      const importance = 1 + cfg.importanceW * ((s.importance || 1) - 1)
+      r.rrf *= importance * (cfg.decayFloor + (1 - cfg.decayFloor) * recency) * accessBoost
     }
     // Temporal validity: this record's fact was superseded → it's stale, so the current-truth
     // record ranks above it ("works at Meta" beats the outdated "works at Google").

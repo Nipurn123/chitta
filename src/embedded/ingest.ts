@@ -66,10 +66,94 @@ export interface IngestDoc {
   episodes?: Array<{ event: string; occurredAt?: number | string; actors?: string[] }>
   /** Learned how-tos / preferences → PROCEDURAL memory (trigger → action; supersede on change). */
   procedures?: Array<{ trigger?: string; action: string }>
+  /** Self-contained statements of fact from this content ("The user adopted a beagle named Max").
+   *  Each is indexed as an extra search key - a short chunk of THIS record, so it inherits the
+   *  record's ACL and finding it finds the record. Supplied by the calling model (no extra LLM);
+   *  when absent and an LLM is configured, Chitta extracts them (CONTEXT_LLM_FACTS=0 to skip). */
+  facts?: string[]
+  /** When the content happened (e.g. a conversation's session date; ms or a date string). Every
+   *  chunk that doesn't already show it gets a "[date]" header, so a passage cut from the middle
+   *  of a session still says when it was said. Stored on the record node. */
+  occurredAt?: number | string
   /** INTERNAL (set by the authorized write path): the writer's accessible virtual_record_ids as
    *  a membership set, so belief revision only supersedes memories the writer can see - in
    *  O(subject-versions), not O(accessible-set). Undefined ⇒ global. */
   scope?: ScopeSet
+}
+
+// A transcript line opens a turn: "user: ...", "Caroline: ...", optionally after a leading
+// "(date): " tag. Only the first two distinct speakers count as turn boundaries, so a reply's
+// own "Note:" / "Step 1:" lines stay inside the reply.
+const TURN = /^(?:\(.{1,40}?\):\s*)?([A-Za-z][\w .'-]{0,30}?):\s/
+
+/** Conversation-aware chunker: a ROUND (a turn by the speaker who opened the conversation plus
+ *  the replies to it) is the unit, packed up to CONTEXT_CHUNK_TURN_CHARS (default 1200). The
+ *  prose chunker splits a reply on every blank line, so a chat session became ~37 fragments, a
+ *  quarter under 100 chars and 90% with no speaker label - an answer separated from the question
+ *  it answers. A long round is split on line boundaries, and every piece after the first is led by
+ *  the round's opening line, so it still says what was asked. Returns null for non-dialogue text
+ *  (fewer than two turns per speaker), which then takes the prose path. CONTEXT_CHUNK_TURNS=0
+ *  turns this off. */
+export function chunkConversation(text: string): string[] | null {
+  if (/^(0|false|off)$/i.test(process.env.CONTEXT_CHUNK_TURNS ?? "")) return null
+  const size = Number(process.env.CONTEXT_CHUNK_TURN_CHARS ?? 1200)
+  const lines = text.split("\n")
+  const speakers: string[] = []
+  for (const l of lines) {
+    const s = TURN.exec(l)?.[1].toLowerCase()
+    if (s && !speakers.includes(s)) speakers.push(s)
+    if (speakers.length === 2) break
+  }
+  if (speakers.length < 2) return null
+  const turns: Array<{ speaker: string; text: string }> = []
+  for (const l of lines) {
+    const s = TURN.exec(l)?.[1].toLowerCase()
+    if (s && speakers.includes(s)) turns.push({ speaker: s, text: l })
+    else if (turns.length) turns[turns.length - 1].text += `\n${l}`
+    else turns.push({ speaker: "", text: l }) // preamble before the first turn
+  }
+  if (Math.min(...speakers.map((s) => turns.filter((t) => t.speaker === s).length)) < 2) return null
+
+  const rounds: string[][] = []
+  for (const t of turns) {
+    if (!rounds.length || t.speaker === speakers[0]) rounds.push([t.text])
+    else rounds[rounds.length - 1].push(t.text)
+  }
+  const out: string[] = []
+  for (const r of rounds) {
+    const whole = r.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+    if (!whole) continue
+    if (whole.length <= size) {
+      out.push(whole)
+      continue
+    }
+    const opener = r[0].trim()
+    const lead = opener.length > 200 ? `${opener.slice(0, 200)}…` : opener
+    let cur = ""
+    let pieces = 0
+    const flush = () => {
+      if (cur.trim()) out.push(pieces++ ? `${lead}\n${cur.trim()}` : cur.trim())
+      cur = ""
+    }
+    const budget = Math.max(200, size - lead.length - 1)
+    for (const line of whole.split("\n")) {
+      // a single over-long line is cut at sentence ends, then hard-split
+      const parts = line.length <= budget ? [line] : (line.match(new RegExp(`.{1,${budget}}(?:[.!?](?=\\s)|$)|.{1,${budget}}`, "g")) ?? [line])
+      for (const p of parts) {
+        if (cur && cur.length + p.length + 1 > budget) flush()
+        cur = cur ? `${cur}\n${p}` : p
+      }
+    }
+    flush()
+  }
+  return out.length ? out : null
+}
+
+/** "[date] " on every chunk that doesn't already show the record's date. */
+export function withDateHeader(chunks: string[], occurredAt?: number | string): string[] {
+  if (occurredAt == null || occurredAt === "") return chunks
+  const d = typeof occurredAt === "number" ? new Date(occurredAt).toISOString().slice(0, 10) : String(occurredAt).trim()
+  return chunks.map((c) => (c.includes(d) ? c : `[${d}] ${c}`))
 }
 
 /** Structure-aware chunker. The old greedy-merge packed many DISTINCT facts into one
@@ -85,6 +169,8 @@ export interface IngestDoc {
  *     next chunk's content (so "PRICING TIERS:" isn't a useless standalone).
  *  Oversized units are hard-split. No overlap (2026 benchmarks: no measurable gain). */
 export function chunkText(text: string, size = 512, minChunk = 80): string[] {
+  const turns = chunkConversation(text)
+  if (turns) return turns
   const blocks = text.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean)
   const out: string[] = []
   let carry = "" // a short heading held to prepend to the following content
@@ -153,6 +239,8 @@ export class Ingestor {
     private readonly store: SqliteStore,
     private readonly embeddings: EmbeddingProvider,
     private readonly extractor: KnowledgeExtractor = new DeterministicExtractor(),
+    /** Extracts fact keys when the caller supplies none (the LLM, in LLM mode). */
+    private readonly factSource?: { extractFacts(text: string, occurredAt?: number | string): Promise<string[]> },
   ) {}
 
   // --- identity surface (normally fed by an IdP/SCIM sync) ---
@@ -194,6 +282,7 @@ export class Ingestor {
       indexingStatus: "COMPLETED",
       ownerId: doc.ownerId, // creator - used for write/delete authorization
       createdAt: Date.now(), // memory recency baseline (decay/salience re-ranking)
+      occurredAt: doc.occurredAt, // when the content happened (session date), if the caller knows
       importance, // live salience weight (decay re-ranker input; sleep may re-weight it)
       importanceBase: importance, // immutable write-time seed → keeps sleep re-weight idempotent
     })
@@ -215,11 +304,24 @@ export class Ingestor {
     const isCode = !!CodeExtractor.detectLanguage(doc.recordName)
     const cleanText = isCode ? text : stripBoilerplate(text)
 
-    // (3) VECTORS: chunk → embed → store.
-    const chunks = chunkText(cleanText)
+    // (3) VECTORS: chunk (+ the record's date header) → embed, batched when the embedder can →
+    // store. The vector is of exactly the stored text, so a later reindex reproduces it.
+    const chunks = withDateHeader(chunkText(cleanText), doc.occurredAt)
+    const vectors = this.embeddings.embedDenseBatch ? await this.embeddings.embedDenseBatch(chunks) : null
     for (let i = 0; i < chunks.length; i++) {
-      const embedding = await this.embeddings.embedDense(chunks[i])
+      const embedding = vectors ? vectors[i] : await this.embeddings.embedDense(chunks[i])
       this.store.addChunk(`${doc.recordId}#${i}`, vid, doc.orgId, chunks[i], embedding)
+    }
+
+    // (3b) FACT KEYS: extra short chunks (`<id>#f<n>`) of this same record - same vid, so the same
+    // ACL; deleteRecord / reindex treat them like any chunk.
+    const llmFacts = !isCode && !/^(0|false|off)$/i.test(process.env.CONTEXT_LLM_FACTS ?? "1")
+    const rawFacts = doc.facts ?? (this.factSource && llmFacts ? await this.factSource.extractFacts(cleanText, doc.occurredAt).catch(() => []) : [])
+    const facts = withDateHeader(rawFacts.map((f) => sanitizeBody(f).trim()).filter(Boolean).slice(0, 60), doc.occurredAt)
+    if (facts.length) {
+      const fv = this.embeddings.embedDenseBatch ? await this.embeddings.embedDenseBatch(facts) : null
+      for (let i = 0; i < facts.length; i++)
+        this.store.addChunk(`${doc.recordId}#f${i}`, vid, doc.orgId, facts[i], fv ? fv[i] : await this.embeddings.embedDense(facts[i]))
     }
 
     // (4) KNOWLEDGE GRAPH: extract concepts → entity nodes + relationship edges.

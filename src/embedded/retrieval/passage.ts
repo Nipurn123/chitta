@@ -25,6 +25,19 @@ export function queryTokens(query: string): string[] {
 // the query terms (term-length-weighted, so specific/rare terms dominate). This turns
 // "matched the right digest" into "returned the exact fact" - at read time, no
 // re-ingest, and it transparently skips any leftover cookie/nav line in a chunk.
+/** The chunk's date header ("[2024-03-01] ..." from ingest, or a leading "(date): " tag), if any. */
+export function chunkDate(content: string): string | null {
+  const m = /^\[([^\]\n]{4,40})\]\s/.exec(content) ?? /^\(([^)\n]{4,40}?(?:\([^)\n]*\))?[^)\n]*)\):\s/.exec(content)
+  return m ? m[1].trim() : null
+}
+
+/** A returned passage keeps its chunk's date: the best line of a dated chunk is often not the
+ *  header line, and "when was this said" is half of many memory questions. */
+export function datedPassage(content: string, passage: string): string {
+  const d = chunkDate(content)
+  return d && !passage.includes(d) ? `[${d}] ${passage}` : passage
+}
+
 export function bestPassage(content: string, terms: string[]): string {
   const lines = content
     .trim()

@@ -9,6 +9,7 @@ import type { EmbeddedContext } from "../../embedded/index"
 import type { BenchmarkCase, QuestionCategory } from "../datasets/types"
 import { recallAtK, precisionAtK, reciprocalRank, ndcgAtK } from "../metrics"
 import { approxTokens, type RetrievedContext } from "./types"
+import { parseDate } from "../../embedded/retrieval/time-stage"
 
 export interface PerQuestionRetrieval {
   category: QuestionCategory
@@ -32,7 +33,7 @@ export async function scoreRetrieval(
 
   for (const q of c.questions) {
     const t0 = performance.now()
-    const res = await ctx.searchWithGraph(q.question, userId, orgId, undefined, k)
+    const res = await ctx.searchWithGraph(q.question, userId, orgId, undefined, k, { now: parseDate(q.questionDate) ?? undefined })
     retrievalMs += performance.now() - t0
 
     // Record-level ranked list (a record can yield several snippets - keep each record's

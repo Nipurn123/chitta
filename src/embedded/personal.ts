@@ -6,9 +6,7 @@
 import path from "node:path"
 import os from "node:os"
 import fs from "node:fs"
-import { buildEmbeddedContext, type EmbeddedContext } from "./index"
-import { LocalHashEmbeddings } from "./local-embeddings"
-import { TransformersEmbeddings, AutoEmbeddings } from "./transformers-embeddings"
+import { buildEmbeddedContext, defaultEmbeddings, type EmbeddedContext, type EmbeddedOptions } from "./index"
 import { DeterministicExtractor, HybridExtractor, type KnowledgeExtractor } from "./index"
 import { LlmExtractor } from "./llm-extractor"
 import { CrossEncoderReranker } from "./reranker"
@@ -55,13 +53,12 @@ export function personalContextPath(): string {
   return path.join(dir, "context.db")
 }
 
-/** Pick the embedder from env: real semantic (transformers) or the offline
- *  keyword-hash default. CONTEXT_EMBEDDINGS=transformers enables the real model. */
+/** Pick the embedder from env - the same resolution as the library default (defaultEmbeddings):
+ *  CONTEXT_EMBEDDINGS auto (default: real, hash fallback) | real | transformers | hash | local, and
+ *  CONTEXT_EMBED_MODEL / CONTEXT_EMBED_PROFILE for the model. (This used to ignore `real` and the
+ *  profile, so the server and `chitta bench` could embed differently.) */
 export function pickEmbeddings(): EmbeddingProvider {
-  const mode = (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase()
-  if (mode === "hash") return new LocalHashEmbeddings()
-  if (mode === "transformers") return new TransformersEmbeddings(process.env.CONTEXT_EMBED_MODEL || undefined)
-  return new AutoEmbeddings(process.env.CONTEXT_EMBED_MODEL || undefined) // default: real, hash fallback
+  return defaultEmbeddings()
 }
 
 /** Build the sovereign/local LLM client if CONTEXT_LLM_URL is set (used for both
@@ -81,12 +78,19 @@ export function pickExtractor(llm?: LlmExtractor): KnowledgeExtractor {
   return llm ? new HybridExtractor(new DeterministicExtractor(), llm) : new DeterministicExtractor()
 }
 
+/** The retrieval pipeline the MCP server runs (embedder, extractor, LLM, reranker) from env.
+ *  `chitta bench` builds from this too, so a benchmark number describes the shipped
+ *  configuration - a run that silently dropped the reranker once under-reported Chitta by 6 pts. */
+export function serverPipeline(): Pick<EmbeddedOptions, "embeddings" | "extractor" | "llm" | "reranker"> {
+  const llm = pickLlm()
+  return { embeddings: pickEmbeddings(), extractor: pickExtractor(llm), llm, reranker: pickReranker() }
+}
+
 export function personalContext() {
   if (cached) return cached
   const dbPath = personalContextPath()
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
-  const llm = pickLlm()
-  const ctx = buildEmbeddedContext({ path: dbPath, embeddings: pickEmbeddings(), extractor: pickExtractor(llm), llm, reranker: pickReranker() })
+  const ctx = buildEmbeddedContext({ path: dbPath, ...serverPipeline() })
   const { userId, orgId, role, groups } = identity()
   // Provision the asking user into the SHARED graph: their role + group memberships
   // drive what they can create and access. Idempotent (INSERT OR REPLACE).

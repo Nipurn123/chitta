@@ -12,7 +12,7 @@
 // The LLM is injected, so any single call throwing (a flaky endpoint) is caught and
 // counted as an incorrect answer rather than aborting the whole run.
 
-import type { BenchLlm, QaScore, RetrievedContext, ScoreQaFn } from "./types"
+import type { BenchLlm, QaHooks, QaScore, RetrievedContext, ScoreQaFn } from "./types"
 import type { BenchQuestion, QuestionCategory } from "../datasets/types"
 
 // Canonical category order for stable, readable rows (values, not the type union).
@@ -75,34 +75,52 @@ function expressesDontKnow(text: string): boolean {
   return DONT_KNOW_PATTERNS.some((p) => t.includes(p))
 }
 
-async function isCorrect(q: BenchQuestion, contextText: string, llm: BenchLlm): Promise<boolean> {
+async function isCorrect(q: BenchQuestion, contextText: string, llm: BenchLlm): Promise<{ correct: boolean; predicted: string }> {
   let predicted: string
   try {
-    predicted = await llm.answer(q.question, contextText)
+    predicted = await llm.answer(q.question, contextText, { questionDate: q.questionDate })
   } catch {
-    return false // a thrown answer counts as wrong, not a crashed run
+    return { correct: false, predicted: "" } // a thrown answer counts as wrong, not a crashed run
   }
 
-  // `abstain` and the `abstention` category both mean "the answer isn't in memory".
-  if (q.abstain === true || q.category === "abstention") {
-    return expressesDontKnow(predicted)
-  }
+  return { correct: await judgePrediction(q, predicted, llm), predicted }
+}
 
-  // Normal question: the judge decides semantic correctness (paraphrase-aware).
+/** Grade one prediction for a question. `abstain` and the `abstention` category both mean "the
+ *  answer isn't in memory": a dataset with its own question types (LongMemEval) is graded by the
+ *  judge with its abstention rule, as its official scorer does; otherwise any refusal phrasing
+ *  counts. Everything else: the judge decides semantic correctness by the question type's rule. */
+export async function judgePrediction(q: BenchQuestion, predicted: string, llm: BenchLlm, opts: { rethrow?: boolean } = {}): Promise<boolean> {
+  const abstention = q.abstain === true || q.category === "abstention"
+  if (abstention && !q.sourceType) return expressesDontKnow(predicted)
   try {
-    return await llm.judge(q.question, q.answer, predicted)
-  } catch {
+    return await llm.judge(q.question, q.answer, predicted, { questionType: q.sourceType, abstention })
+  } catch (e) {
+    if (opts.rethrow) throw e // the caller wants "no grade" kept apart from "wrong"
     return false
   }
 }
 
-export const scoreQa: ScoreQaFn = async (retrieved: RetrievedContext[], llm: BenchLlm): Promise<QaScore[]> => {
+export const scoreQa: ScoreQaFn = async (retrieved: RetrievedContext[], llm: BenchLlm, hooks?: QaHooks): Promise<QaScore[]> => {
   const perCategory = new Map<QuestionCategory, { n: number; correct: number }>()
   let overallN = 0
   let overallCorrect = 0
 
-  for (const rc of retrieved) {
-    const correct = await isCorrect(rc.question, rc.contextText, llm)
+  // Answer + judge `concurrency` questions at a time (default 1); aggregation below is in input
+  // order either way, so the result doesn't depend on the concurrency.
+  const results = new Array<{ correct: boolean; predicted: string }>(retrieved.length)
+  let next = 0
+  const worker = async () => {
+    while (next < retrieved.length) {
+      const i = next++
+      results[i] = await isCorrect(retrieved[i].question, retrieved[i].contextText, llm)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, hooks?.concurrency ?? 1) }, worker))
+
+  for (const [i, rc] of retrieved.entries()) {
+    const { correct, predicted } = results[i]
+    hooks?.onAnswer?.(rc.question, predicted, correct)
     const bucket = perCategory.get(rc.question.category) ?? { n: 0, correct: 0 }
     bucket.n += 1
     if (correct) bucket.correct += 1

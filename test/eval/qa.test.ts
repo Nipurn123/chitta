@@ -263,3 +263,67 @@ describe("httpBenchLlmFromEnv", () => {
     }
   })
 })
+
+// --- LongMemEval specifics: question date, per-type judge rule, abstention, hypotheses -----
+
+describe("LongMemEval Tier-B wiring", () => {
+  const lme = (id: string, type: string, extra: Partial<BenchQuestion> = {}): BenchQuestion => ({
+    ...q(id, "How many days ago did I adopt Max?", "12 days", "temporal", { evidenceIds: ["s1"] }),
+    sourceType: type,
+    questionDate: "2023/05/30",
+    ...extra,
+  })
+
+  test("the reader gets the question date; the judge gets the question type", async () => {
+    const seen: { date?: string; type?: string; abstention?: boolean } = {}
+    const llm: BenchLlm = {
+      answer: async (_q, _c, o) => ((seen.date = o?.questionDate), "12 days"),
+      judge: async (_q, _g, _p, o) => ((seen.type = o?.questionType), (seen.abstention = o?.abstention), true),
+    }
+    await scoreQa([ctx(lme("t1", "temporal-reasoning"), "(2023/05/18) user: I adopted Max today.")], llm)
+    expect(seen).toEqual({ date: "2023/05/30", type: "temporal-reasoning", abstention: false })
+  })
+
+  test("a LongMemEval abstention is graded by the judge (official behavior), others by refusal patterns", async () => {
+    let judged = false
+    const llm: BenchLlm = { answer: async () => "You never told me that.", judge: async () => ((judged = true), true) }
+    const abs = lme("a1_abs", "single-session-user", { category: "abstention", abstain: true, evidenceIds: [] })
+    const rows = await scoreQa([ctx(abs, "")], llm)
+    expect(judged).toBe(true) // "You never told me that." matches no refusal pattern - only the judge can grade it
+    expect(rows.find((r) => r.category === "abstention")).toMatchObject({ n: 1, correct: 1 })
+  })
+
+  test("onAnswer receives every prediction (for the official scorer's hypotheses file)", async () => {
+    const got: Array<[string, string, boolean]> = []
+    await scoreQa([ctx(lme("t1", "temporal-reasoning"), "")], { answer: async () => "12 days", judge: async () => false }, { onAnswer: (qq, p, c) => got.push([qq.id, p, c]) })
+    expect(got).toEqual([["t1", "12 days", false]])
+  })
+
+  test("HttpBenchLlm: CURRENT DATE in the reader prompt; the type's rule in the judge prompt", async () => {
+    const bodies: Array<{ messages: Array<{ content: string }> }> = []
+    const llm = new HttpBenchLlm({ endpoint: "http://x", fetchImpl: fakeFetch("CORRECT", (_u, i) => bodies.push(JSON.parse(i.body as string))) })
+    await llm.answer("How many days ago?", "ctx", { questionDate: "2023/05/30" })
+    expect(bodies[0].messages[1].content).toStartWith("CURRENT DATE: 2023/05/30")
+    expect(bodies[0].messages[0].content).toContain("CURRENT DATE")
+
+    await llm.judge("q", "18 days", "19 days", { questionType: "temporal-reasoning" })
+    expect(bodies[1].messages[0].content).toContain("off-by-one")
+    await llm.judge("q", "rubric", "p", { questionType: "single-session-preference" })
+    expect(bodies[2].messages[0].content).toContain("RUBRIC")
+    await llm.judge("q", "why", "p", { abstention: true })
+    expect(bodies[3].messages[0].content).toContain("UNANSWERABLE")
+    await llm.judge("q", "Paris", "Paris") // no type: the generic semantic judge, unchanged
+    expect(bodies[4].messages[0].content).toContain("Judge by MEANING")
+  })
+})
+
+describe("judge without a verdict", () => {
+  test("throws instead of grading the answer wrong; scoreQa still counts it as incorrect", async () => {
+    const empty = new HttpBenchLlm({ endpoint: "http://x", fetchImpl: fakeFetch("") })
+    await expect(empty.judge("q", "Paris", "Paris")).rejects.toThrow(/no verdict/)
+    const { judgePrediction } = await import("../../src/eval/bench/qa")
+    const question = q("j1", "Capital?", "Paris", "single-hop", { evidenceIds: ["e1"] })
+    expect(await judgePrediction(question, "Paris", empty)).toBe(false)
+    await expect(judgePrediction(question, "Paris", empty, { rethrow: true })).rejects.toThrow()
+  })
+})

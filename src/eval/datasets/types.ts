@@ -29,6 +29,8 @@ export interface HistoryItem {
    *  absent ⇒ the deterministic extractor path. */
   entities?: Array<{ name: string; type?: string }>
   relations?: Array<{ from: string; to: string; type: string; confidence?: number }>
+  /** Optional pre-extracted fact keys (see IngestDoc.facts). */
+  facts?: string[]
 }
 
 export interface BenchQuestion {
@@ -42,6 +44,11 @@ export interface BenchQuestion {
   evidenceIds: string[]
   /** True when the correct behavior is to NOT answer (answer isn't in the history). */
   abstain?: boolean
+  /** The dataset's own question type, verbatim (LongMemEval: single-session-preference,
+   *  temporal-reasoning, ...). Finer than `category`; LongMemEval's judge rules depend on it. */
+  sourceType?: string
+  /** When the question is asked (LongMemEval question_date): "how many days ago" is relative to it. */
+  questionDate?: string
 }
 
 export interface BenchmarkCase {

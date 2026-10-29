@@ -3,10 +3,11 @@
 // question. Tier B is a DEPENDENCY (scoreQa + llm), not an import, so the runner compiles and
 // runs Tier A with no LLM, and tests inject deterministic stubs. Returns one Scorecard.
 
-import { buildEmbeddedContext, DeterministicExtractor, HybridExtractor, LlmExtractor, type KnowledgeExtractor } from "../../embedded/index"
-import { CrossEncoderReranker } from "../../embedded/reranker"
+import { buildEmbeddedContext } from "../../embedded/index"
+import { serverPipeline } from "../../embedded/personal"
+import { assertRerankerReady } from "../../embedded/reranker"
 import type { BenchmarkDataset } from "../datasets/types"
-import type { RunConfig, Scorecard, BenchLlm, ScoreQaFn, RetrievedContext } from "./types"
+import type { RunConfig, Scorecard, BenchLlm, QaHooks, ScoreQaFn, RetrievedContext } from "./types"
 import { ingestCase } from "./ingest"
 import { scoreRetrieval, type PerQuestionRetrieval } from "./retrieval"
 import { aggregateRetrieval, computeEfficiency } from "./scorecard"
@@ -14,6 +15,8 @@ import { aggregateRetrieval, computeEfficiency } from "./scorecard"
 export interface RunDeps {
   scoreQa?: ScoreQaFn
   llm?: BenchLlm
+  /** Called per Tier-B answer (e.g. to write a hypotheses file for the official scorer). */
+  onAnswer?: QaHooks["onAnswer"]
 }
 
 export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig, deps: RunDeps = {}): Promise<Scorecard> {
@@ -23,20 +26,16 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
   const fullTokensPerCase: number[] = []
   const ingestMsPerCase: number[] = []
   const retrievalMsPerQuestion: number[] = []
-  // One reranker shared across cases (it caches the cross-encoder model after first load).
-  const reranker = config.rerank ? new CrossEncoderReranker() : undefined
-  // BENCHMARK MODE: with CONTEXT_LLM_URL set, ingest via the HYBRID extractor (deterministic +
-  // LLM) - the "with-LLM" numbers, vs the zero-token deterministic default. Point it at a local/
-  // sovereign model (vLLM/Ollama) or any OpenAI-compatible endpoint (a full /chat/completions URL
-  // is used verbatim). Shared across cases; the deterministic extractor still runs underneath.
-  const llmUrl = process.env.CONTEXT_LLM_URL
-  const extractor: KnowledgeExtractor | undefined = llmUrl
-    ? new HybridExtractor(
-        new DeterministicExtractor(),
-        new LlmExtractor({ endpoint: llmUrl, model: process.env.CONTEXT_LLM_MODEL || "default", apiKey: process.env.CONTEXT_LLM_KEY }),
-      )
-    : undefined
-  if (llmUrl) console.log(`(benchmark mode: LLM extraction via ${process.env.CONTEXT_LLM_MODEL || "default"})`)
+  // The SAME pipeline the MCP server builds (personal.ts serverPipeline), built once and shared
+  // across cases (the embedder and cross-encoder cache their models after first load).
+  // BENCHMARK MODE: with CONTEXT_LLM_URL set it ingests via the HYBRID extractor (deterministic +
+  // LLM) - the "with-LLM" numbers, vs the zero-token deterministic default - exactly as the
+  // server would. The reranker follows config.rerank (the CLI defaults it ON, like the server)
+  // and must actually load: a silent no-op would benchmark a stripped pipeline.
+  const pipeline = serverPipeline()
+  const reranker = config.rerank ? pipeline.reranker : undefined
+  if (reranker) await assertRerankerReady(reranker)
+  if (process.env.CONTEXT_LLM_URL) console.log(`(benchmark mode: LLM extraction via ${process.env.CONTEXT_LLM_MODEL || "default"})`)
 
   for (const c0 of cases) {
     // Optional per-case question cap (cheap Tier-B iteration). History is always ingested
@@ -44,7 +43,7 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
     const c = config.maxQuestions && config.maxQuestions > 0 ? { ...c0, questions: c0.questions.slice(0, config.maxQuestions) } : c0
     // Fresh, isolated memory per case - each case is an independent long history, and this
     // also proves the store starts clean (no cross-case leakage inflating recall).
-    const ctx = buildEmbeddedContext({ path: ":memory:", reranker, extractor })
+    const ctx = buildEmbeddedContext({ path: ":memory:", ...pipeline, reranker })
     // Distinct user/org ids: both are graph nodes, so identical ids would collide (the org
     // node would clobber the user node under INSERT OR REPLACE). admin ⇒ unrestricted ingest.
     const userId = "bench-user"
@@ -64,7 +63,7 @@ export async function runBenchmark(dataset: BenchmarkDataset, config: RunConfig,
   }
 
   const retrieval = config.tier !== "b" ? aggregateRetrieval(allPerQ) : undefined
-  const qa = config.tier !== "a" && deps.scoreQa && deps.llm ? await deps.scoreQa(allRetrieved, deps.llm) : undefined
+  const qa = config.tier !== "a" && deps.scoreQa && deps.llm ? await deps.scoreQa(allRetrieved, deps.llm, { onAnswer: deps.onAnswer }) : undefined
   const efficiency = computeEfficiency(allRetrieved, fullTokensPerCase, ingestMsPerCase, retrievalMsPerQuestion)
 
   return { config, cases: cases.length, questions: allRetrieved.length, retrieval, qa, efficiency }

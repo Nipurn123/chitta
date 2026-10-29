@@ -60,6 +60,9 @@ export interface VectorDBService {
  *  `embedQuery` undefined and callers fall back to `embedDense`. */
 export interface EmbeddingProvider {
   embedDense(query: string): Promise<number[]>
+  /** Embed many DOCUMENTS in one batched call (same vectors as embedDense, far fewer model
+   *  invocations). Optional; ingest falls back to embedDense per chunk. */
+  embedDenseBatch?(texts: string[]): Promise<number[][]>
   embedQuery?(query: string): Promise<number[]>
   embedSparse(query: string): Promise<{ indices: number[]; values: number[] }>
   /** True when this is a LEXICAL (keyword-hash) embedder rather than a semantic one. Absolute

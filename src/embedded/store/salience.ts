@@ -26,7 +26,8 @@ export function recordSalience(
   return out
 }
 
-/** Mark records as just-accessed (bump recency + frequency) - called on retrieval. */
+/** Mark records as just-used (bump recency + frequency) - called by markUsed (a real use, such
+ *  as a cited source), not on every retrieval. */
 export function touchRecords(db: Database, recordIds: string[]): void {
   const now = Date.now()
   const stmt = db.query(

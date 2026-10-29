@@ -30,13 +30,26 @@ export function resolveEmbedModel(): string | undefined {
 
 // Asymmetric models need a TASK PREFIX that differs for queries vs documents.
 // EmbeddingGemma (the current best sub-500M model, +8 MTEB over bge-small) is the
-// headline case; symmetric models (bge/gte) get no prefix.
+// headline case; symmetric models (bge/gte) get no prefix. (Measured on pooled LongMemEval,
+// 2026-10-28: BGE's query-side search instruction cost Chitta 0.9 points all-gold@10, and BAAI's
+// CLS pooling matched mean pooling - so bge stays unprefixed, mean-pooled.)
 function prefixesFor(model: string): { query: string; doc: string } | null {
   const m = model.toLowerCase()
   if (m.includes("embeddinggemma")) return { query: "task: search result | query: ", doc: "title: none | text: " }
   if (m.includes("e5") || m.includes("multilingual-e5")) return { query: "query: ", doc: "passage: " }
   return null
 }
+
+const POOLING = "mean"
+
+/** CONTEXT_EMBED_THREADS caps the ONNX runtime's threads per process (default: one per core). Set
+ *  it when running many Chitta processes side by side - each otherwise spawns a thread per core
+ *  and they starve each other (28 processes on 56 vCPUs ran at load ~600). */
+export function onnxThreadOptions(): { session_options: { intraOpNumThreads: number; interOpNumThreads: number } } | undefined {
+  const n = Number(process.env.CONTEXT_EMBED_THREADS ?? 0)
+  return n > 0 ? { session_options: { intraOpNumThreads: n, interOpNumThreads: 1 } } : undefined
+}
+const BATCH = 16 // chunks per model call at ingest; bounds padding memory
 
 export class TransformersEmbeddings implements EmbeddingProvider {
   private extractor: ((text: string, opts: unknown) => Promise<{ data: ArrayLike<number> }>) | null = null
@@ -58,31 +71,48 @@ export class TransformersEmbeddings implements EmbeddingProvider {
 
   private async pipe() {
     if (this.extractor) return this.extractor
-    // Specifier typed as `string` so tsc doesn't require the optional dep to resolve.
+    // Specifiers held in variables so neither tsc nor `bun build --compile` tries to resolve the
+    // optional deps (a literal in import() made the compile fail when the legacy one is absent).
     const spec = "@huggingface/transformers"
-    const mod: any = await import(spec as string).catch(() => import("@xenova/transformers" as string))
+    const legacy = "@xenova/transformers"
+    const mod: any = await import(spec as string).catch(() => import(legacy as string))
     if (mod?.env) mod.env.allowLocalModels = false
-    this.extractor = await mod.pipeline("feature-extraction", this.model)
+    this.extractor = await mod.pipeline("feature-extraction", this.model, onnxThreadOptions())
     return this.extractor!
+  }
+
+  private truncate(v: number[]): number[] {
+    if (!this.dim || this.dim >= v.length) return v
+    v = v.slice(0, this.dim) // Matryoshka truncation
+    let n = 0
+    for (const x of v) n += x * x
+    n = Math.sqrt(n) || 1
+    return v.map((x) => x / n) // re-normalize the truncated vector
   }
 
   private async embed(text: string, kind: "query" | "doc"): Promise<number[]> {
     const ex = await this.pipe()
     const input = this.prefix ? this.prefix[kind] + text : text
-    const out = await ex(input, { pooling: "mean", normalize: true })
-    let v = Array.from(out.data as ArrayLike<number>)
-    if (this.dim && this.dim < v.length) {
-      v = v.slice(0, this.dim) // Matryoshka truncation
-      let n = 0
-      for (const x of v) n += x * x
-      n = Math.sqrt(n) || 1
-      v = v.map((x) => x / n) // re-normalize the truncated vector
-    }
-    return v
+    const out = await ex(input, { pooling: POOLING, normalize: true })
+    return this.truncate(Array.from(out.data as ArrayLike<number>))
   }
 
   async embedDense(text: string): Promise<number[]> {
     return this.embed(text, "doc")
+  }
+
+  // One model call per BATCH documents (the pipeline pads + masks, so each vector matches what
+  // embedDense returns for that text alone). Ingest of a 53k-chunk store was 53k sequential calls.
+  async embedDenseBatch(texts: string[]): Promise<number[][]> {
+    const ex = (await this.pipe()) as unknown as (t: string[], o: unknown) => Promise<{ data: Float32Array; dims: number[] }>
+    const out: number[][] = []
+    for (let i = 0; i < texts.length; i += BATCH) {
+      const part = texts.slice(i, i + BATCH).map((t) => (this.prefix ? this.prefix.doc + t : t))
+      const res = await ex(part, { pooling: POOLING, normalize: true })
+      const d = res.dims[res.dims.length - 1]
+      for (let j = 0; j < part.length; j++) out.push(this.truncate(Array.from(res.data.subarray(j * d, (j + 1) * d))))
+    }
+    return out
   }
   async embedQuery(text: string): Promise<number[]> {
     return this.embed(text, "query")
@@ -117,6 +147,10 @@ export class AutoEmbeddings implements EmbeddingProvider {
   }
   async embedDense(q: string) {
     return (await this.pick()).embedDense(q)
+  }
+  async embedDenseBatch(texts: string[]) {
+    const e = await this.pick()
+    return e.embedDenseBatch ? e.embedDenseBatch(texts) : Promise.all(texts.map((t) => e.embedDense(t)))
   }
   async embedQuery(q: string) {
     const e = await this.pick()

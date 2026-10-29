@@ -99,6 +99,8 @@ function toCase(item: LmeItem): BenchmarkCase {
     evidenceIds: abstain ? [] : (item.answer_session_ids ?? []),
   }
   if (abstain) question.abstain = true
+  if (item.question_type) question.sourceType = item.question_type
+  if (item.question_date) question.questionDate = item.question_date
 
   return { id: item.question_id, history, questions: [question] }
 }

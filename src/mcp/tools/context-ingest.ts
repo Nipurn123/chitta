@@ -71,6 +71,13 @@ const schema = {
           required: ["action"],
         },
       },
+      facts: {
+        type: "array",
+        description:
+          "short self-contained facts the content states, e.g. 'The user adopted a beagle named Max' - each becomes an extra search key for this memory",
+        items: { type: "string" },
+      },
+      occurred_at: { type: "string", description: "when the content happened (e.g. the conversation's date; ISO). Optional" },
       share: {
         type: "array",
         description: "principal ids (users or groups) to ALSO grant read access - default is private to you",
@@ -90,6 +97,8 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     relations?: Array<{ from: string; to: string; type: string; confidence?: number }>
     episodes?: Array<{ event: string; occurredAt?: string; actors?: string[] }>
     procedures?: Array<{ trigger?: string; action: string }>
+    facts?: string[]
+    occurred_at?: string
     share?: string[]
     org_wide?: boolean
   }
@@ -116,6 +125,8 @@ async function handler(args: Record<string, unknown>, backend: ContextBackend): 
     relations: a.relations,
     episodes: a.episodes,
     procedures: a.procedures,
+    facts: Array.isArray(a.facts) ? a.facts.filter((f) => typeof f === "string") : undefined,
+    occurredAt: typeof a.occurred_at === "string" ? a.occurred_at : undefined,
   })
   const typed = a.relations?.length ? `, ${a.relations.length} typed relation(s)` : ""
   const epi = a.episodes?.length ? `, ${a.episodes.length} episode(s)` : ""

@@ -25,6 +25,7 @@ import { nameMatch, typeBucket, type EntityCandidate } from "./graph/entity-reso
 import { cosine } from "./retrieval/passage"
 import { decodeF32 } from "./store/vector-blob"
 import type { SearchTrace } from "./retrieval/trace"
+import { answerQuestion as answerQuestionWith, type ReadOptions, type ReaderModel, type ReadResult } from "./reader"
 
 /** Outcome of a reindex pass: how many items were re-embedded vs reused (already at the
  *  current embedder's dimension), out of the total walked. */
@@ -147,7 +148,7 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     collectionName: opts.collectionName ?? "records",
     log: opts.log,
   })
-  const ingestor = new Ingestor(store, embeddings, extractor)
+  const ingestor = new Ingestor(store, embeddings, extractor, opts.llm)
   const authorizer = new Authorizer(store)
   const kgqa = new KgqaService(graph, store, embeddings, opts.llm)
   const graphQuery = new GraphQueryService(graph)
@@ -256,9 +257,34 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
   // memory decay/salience, cross-encoder rerank, passage extraction, diversity cap (MMR).
   // The pipeline lives in ./retrieval/* - this is a thin wrapper that threads the
   // shared embedded state into the orchestrator.
-  async function searchWithGraph(query: string, userId: string, orgId: string, trace?: SearchTrace, limit?: number): Promise<RetrievalResponse> {
+  async function searchWithGraph(
+    query: string,
+    userId: string,
+    orgId: string,
+    trace?: SearchTrace,
+    limit?: number,
+    searchOpts?: { now?: number; expansions?: string[] },
+  ): Promise<RetrievalResponse> {
     await reconcile() // a store built by a DIFFERENT embedder must heal on read too, not only on ingest
-    return hybridSearch({ retrieval, store, graph, embeddings, reranker }, query, userId, orgId, trace, limit)
+    return hybridSearch({ retrieval, store, graph, embeddings, reranker, expander: opts.llm }, query, userId, orgId, trace, limit, searchOpts)
+  }
+
+  // LLM-mode end-to-end answer from memory (route → search → gather dated evidence → read); see
+  // reader.ts. Uses the configured LLM unless a reader model is passed (e.g. a stronger one).
+  async function answerQuestion(question: string, userId: string, orgId: string, readOpts: Omit<ReadOptions, "model"> & { model?: ReaderModel } = {}): Promise<ReadResult> {
+    const model = readOpts.model ?? opts.llm
+    if (!model) throw new Error("answerQuestion needs an LLM: set CONTEXT_LLM_URL (or pass a reader model)")
+    return answerQuestionWith({ store, embeddings, search: searchWithGraph }, question, userId, orgId, { ...readOpts, model })
+  }
+
+  // Record a real USE of memories (e.g. the sources an answer cited) - the only thing that feeds
+  // the access-frequency part of salience. Retrieval itself is read-only: counting every search
+  // result as "used" made each query boost what it returned. ACL-scoped: only records this user
+  // can see are counted, so usage can't be used to promote a record outside their slice.
+  async function markUsed(userId: string, orgId: string, recordIds: string[]): Promise<void> {
+    if (recordIds.length === 0) return
+    const accessible = new Set(Object.values(await graph.getAccessibleVirtualRecordIds({ userId, orgId })))
+    store.touchRecords([...new Set(recordIds)].filter((id) => accessible.has(id)))
   }
 
   // LIVING MEMORY - the permission-aware atomic-memory layer (Supermemory parity, but
@@ -710,6 +736,8 @@ export function buildEmbeddedContext(opts: EmbeddedOptions = {}) {
     authorizedIngest,
     deleteRecord,
     searchWithGraph,
+    answerQuestion,
+    markUsed,
     searchTraced,
     recallMemories,
     recallEpisodes,

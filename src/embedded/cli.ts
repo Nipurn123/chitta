@@ -248,11 +248,76 @@ async function main() {
     const name = process.argv[3] && !process.argv[3].startsWith("-") ? process.argv[3] : "synthetic"
     const tier = arg("--tier", "a") as "a" | "b" | "both"
     const k = Number(arg("--k", "10"))
+    const rerank = !has("--no-rerank") && !/^(0|false|off)$/i.test(process.env.CONTEXT_RERANK ?? "")
+    // PER-QUESTION LongMemEval (the official shape, e.g. longmemeval_s): a fresh store per question,
+    // answered by the memory reader and judged; --shard i/N --out f.jsonl for parallel processes.
+    // --merge a.jsonl,b.jsonl prints the per-type table over shard files.
+    if (has("--merge")) {
+      const { mergePerQuestion } = await import("../eval/bench/per-question")
+      const rows = []
+      for (const f of arg("--merge")!.split(",")) for (const l of (await Bun.file(f).text()).split("\n")) if (l) rows.push(JSON.parse(l))
+      console.log(mergePerQuestion(rows))
+      return
+    }
+    if (has("--per-question")) {
+      const judge = httpBenchLlmFromEnv(arg("--answer-model"), arg("--judge-model"))
+      if (!judge || !arg("--path") || !arg("--out")) throw new Error("--per-question needs CONTEXT_LLM_URL, --path <longmemeval_s.json> and --out <rows.jsonl> [--shard i/N] [--reader-model m]")
+      const { runPerQuestionShard } = await import("../eval/bench/per-question")
+      const { LlmExtractor } = await import("./llm-extractor")
+      const endpoint = process.env.CONTEXT_LLM_URL!
+      const router = new LlmExtractor({ endpoint, model: process.env.CONTEXT_LLM_MODEL || "default", apiKey: process.env.CONTEXT_LLM_KEY })
+      const readerLlm = new LlmExtractor({ endpoint, model: arg("--reader-model") ?? (process.env.CONTEXT_LLM_MODEL || "default"), apiKey: process.env.CONTEXT_LLM_KEY })
+      const [shard, shards] = (arg("--shard", "0/1") ?? "0/1").split("/").map(Number)
+      const n = await runPerQuestionShard({
+        path: arg("--path")!, shard, shards, out: arg("--out")!, judge, rerank, storeDir: arg("--store-dir"), ingestOnly: has("--ingest-only"), log: (m) => console.log(m),
+        reader: { complete: (s, u) => readerLlm.complete(s, u), routeQuestion: (q) => router.routeQuestion(q) },
+      })
+      console.log(`shard ${shard}/${shards}: ${n} questions answered this run`)
+      return
+    }
+    // POOLED LongMemEval: every session in ONE store (--store), Chitta vs BM25/dense/RRF baselines
+    // over the same chunks; exits 1 when Chitta loses to RRF (the regression gate).
+    if (has("--pooled")) {
+      if (name !== "longmemeval" || !arg("--path")) throw new Error("--pooled needs: bench longmemeval --pooled --path <longmemeval.json> [--store f.db] [--reuse]")
+      // --answer: end-to-end accuracy on an EXISTING pooled store - the same LLM answers from
+      // Chitta's top-k and from the RRF baseline's, judged per LongMemEval question type.
+      if (has("--answer")) {
+        const qaLlm = httpBenchLlmFromEnv(arg("--answer-model"), arg("--judge-model"))
+        if (!qaLlm) throw new Error("--answer needs CONTEXT_LLM_URL (an OpenAI-compatible endpoint for the reader + judge)")
+        const { runPooledQa, runPooledReaderQa, renderPooledQa } = await import("../eval/bench/pooled-qa")
+        // --reader: Chitta's memory reader (route → search → gather → Chain-of-Note) instead of a
+        // plain one-chunk-per-record context. --reader-model picks the reading model (routing
+        // stays on CONTEXT_LLM_MODEL).
+        const { LlmExtractor } = await import("./llm-extractor")
+        const endpoint = process.env.CONTEXT_LLM_URL!
+        const router = new LlmExtractor({ endpoint, model: process.env.CONTEXT_LLM_MODEL || "default", apiKey: process.env.CONTEXT_LLM_KEY })
+        const readerLlm = new LlmExtractor({ endpoint, model: arg("--reader-model") ?? (process.env.CONTEXT_LLM_MODEL || "default"), apiKey: process.env.CONTEXT_LLM_KEY })
+        const store = arg("--store", "lme-pooled.db")!
+        const qa = has("--reader")
+          ? await runPooledReaderQa({
+              path: arg("--path")!, store, judge: qaLlm, rerank, hypsPrefix: arg("--hyps"), log: (m) => console.log(m),
+              concurrency: Number(arg("--concurrency", "8")),
+              reader: { complete: (s, u) => readerLlm.complete(s, u), routeQuestion: (q) => router.routeQuestion(q) },
+            })
+          : await runPooledQa({ path: arg("--path")!, store, llm: qaLlm, k, rerank, hypsPrefix: arg("--hyps"), log: (m) => console.log(m) })
+        console.log(has("--json") ? JSON.stringify(qa, null, 2) : renderPooledQa(qa))
+        if (!qa.pass) process.exitCode = 1
+        return
+      }
+      const { runPooled, renderPooled } = await import("../eval/bench/pooled")
+      const report = await runPooled({ path: arg("--path")!, store: arg("--store", "lme-pooled.db")!, reuse: has("--reuse"), k, rerank, log: (m) => console.log(m) })
+      console.log(has("--json") ? JSON.stringify({ ...report, perQuestion: undefined }, null, 2) : renderPooled(report))
+      const out = arg("--out")
+      if (out) await Bun.write(out, report.perQuestion.map((r) => JSON.stringify(r)).join("\n") + "\n")
+      if (!report.gate.pass) process.exitCode = 1
+      return
+    }
     const limit = arg("--limit") ? Number(arg("--limit")) : undefined
     const dataset = await loadBenchDataset(name, { path: arg("--path"), limit })
     const llm = tier !== "a" ? httpBenchLlmFromEnv(arg("--answer-model"), arg("--judge-model")) : null
     if (tier !== "a" && !llm) console.log("(no CONTEXT_LLM_URL set → Tier B skipped; running Tier A only)\n")
     const model = process.env.CONTEXT_LLM_MODEL ?? "default"
+    const hyps: string[] = []
     const card = await runBenchmark(
       dataset,
       {
@@ -262,12 +327,16 @@ async function main() {
         limitCases: limit,
         maxQuestions: arg("--max-q") ? Number(arg("--max-q")) : undefined,
         embedder: (process.env.CONTEXT_EMBEDDINGS ?? "auto").toLowerCase(),
-        rerank: has("--rerank"),
+        // ON by default, like the MCP server (personal.ts); --no-rerank / CONTEXT_RERANK=0 opt out.
+        rerank,
         answerModel: llm ? arg("--answer-model") ?? model : undefined,
         judgeModel: llm ? arg("--judge-model") ?? model : undefined,
       },
-      { scoreQa, llm: llm ?? undefined },
+      // --hyps: one {question_id, hypothesis} line per answer - the input format of LongMemEval's
+      // official scorer (src/evaluation/evaluate_qa.py), for a publishable GPT-4o-judged number.
+      { scoreQa, llm: llm ?? undefined, onAnswer: arg("--hyps") ? (q, predicted) => hyps.push(JSON.stringify({ question_id: q.id, hypothesis: predicted })) : undefined },
     )
+    if (arg("--hyps")) await Bun.write(arg("--hyps")!, hyps.join("\n") + (hyps.length ? "\n" : ""))
     console.log(has("--json") ? scorecardJson(card) : renderScorecard(card))
     const report = arg("--report")
     if (report) {

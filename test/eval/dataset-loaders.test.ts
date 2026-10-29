@@ -152,6 +152,14 @@ describe("longMemEvalLoader", () => {
     expect(normal.abstain).toBeUndefined()
   })
 
+  test("keeps the raw question_type and question_date (judge rules + time questions need them)", async () => {
+    const ds = await longMemEvalLoader.load({ path: write("lme.json", LME_FIXTURE) })
+    const single = ds.cases.find((c) => c.id === "lme_single_1")!.questions[0]!
+    expect(single.sourceType).toBe("single-session-user")
+    expect(single.questionDate).toBe("2023/05/10")
+    expect(ds.cases.find((c) => c.id === "lme_multi_1")!.questions[0]!.questionDate).toBeUndefined() // absent stays absent
+  })
+
   test("respects limit (caps number of cases)", async () => {
     const path = write("lme.json", LME_FIXTURE)
     expect((await longMemEvalLoader.load({ path, limit: 2 })).cases).toHaveLength(2)

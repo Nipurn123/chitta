@@ -25,6 +25,8 @@ export interface AskNote {
   text: string
   /** Human source label (record name / citation), when known. */
   name?: string
+  /** The record a search snippet came from - so a citation of it counts as a use (markUsed). */
+  recordId?: string
   /** Relevance of this note to the question (query-note cosine; 1 on the lexical embedder). Set by
    *  gatherAskContext, which ranks by it, and reused by the grounding gate. */
   score?: number
@@ -273,11 +275,14 @@ export async function gatherAskContext(
     ctx.searchWithGraph(question, userId, orgId, undefined, pool).catch(() => ({ searchResults: [] as Array<{ content: string; metadata: unknown }> })),
   ])
 
-  type Cand = { kind: AskNote["kind"]; text: string; name?: string }
+  type Cand = { kind: AskNote["kind"]; text: string; name?: string; recordId?: string }
   const cands: Cand[] = []
   if (exact) for (const f of exact.facts) cands.push({ kind: "graph", text: f, name: cleanSourceName(exact.citations.join(", ")) })
   for (const f of facts) cands.push({ kind: "fact", text: f.memory })
-  for (const r of search.searchResults) cands.push({ kind: "snippet", text: r.content, name: cleanSourceName((r.metadata as { recordName?: string })?.recordName) })
+  for (const r of search.searchResults) {
+    const meta = r.metadata as { recordName?: string; recordId?: string }
+    cands.push({ kind: "snippet", text: r.content, name: cleanSourceName(meta?.recordName), recordId: meta?.recordId })
+  }
 
   const lexical = (await ctx.embeddings.isLexical?.()) ?? false
   const qv = lexical ? null : await (ctx.embeddings.embedQuery ? ctx.embeddings.embedQuery(question) : ctx.embeddings.embedDense(question))
@@ -301,7 +306,7 @@ export async function gatherAskContext(
   for (const c of scored) {
     if (notes.length >= limit || budget - c.text.length < 0) break
     budget -= c.text.length
-    notes.push({ n: notes.length + 1, kind: c.kind, text: c.text, name: c.name, score: c.score })
+    notes.push({ n: notes.length + 1, kind: c.kind, text: c.text, name: c.name, recordId: c.recordId, score: c.score })
   }
   return notes
 }
@@ -399,5 +404,16 @@ export async function answerFromMemory(
   }
   const { system, user } = buildAskPrompt(question, notes)
   const answer = (await generate(system, user, opts.onToken)).trim()
+  // The sources the answer actually cited ([n]) are the memories it USED - the signal salience's
+  // access frequency is meant to track (retrieval alone no longer counts).
+  const cited = new Set([...answer.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])))
+  const used = notes.filter((n) => cited.has(n.n) && n.recordId).map((n) => n.recordId as string)
+  if (used.length) {
+    try {
+      await ctx.markUsed(userId, orgId, used)
+    } catch {
+      /* usage tracking is best-effort - never fail an answer over it */
+    }
+  }
   return { answer, sources: notes, synthesized: true, model: opts.model }
 }

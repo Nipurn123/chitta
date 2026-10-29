@@ -13,7 +13,18 @@ export interface Reranker {
   rank(query: string, docs: string[]): Promise<number[] | null>
 }
 
+import { onnxThreadOptions } from "./transformers-embeddings"
+
 const DEFAULT_MODEL = process.env.CONTEXT_RERANK_MODEL || "Xenova/ms-marco-MiniLM-L-6-v2"
+
+/** For benchmarks: rank() degrades to null when the model can't load, which in a benchmark
+ *  silently measures a pipeline without its reranker. Throw instead, with the fix. */
+export async function assertRerankerReady(reranker: Reranker): Promise<void> {
+  if ((await reranker.rank("probe", ["probe"])) === null)
+    throw new Error(
+      "cross-encoder reranker failed to load (model not downloaded / offline). Fix the model cache, or benchmark without it via --no-rerank / CONTEXT_RERANK=0.",
+    )
+}
 
 export class CrossEncoderReranker implements Reranker {
   private model: unknown | null = null
@@ -32,7 +43,7 @@ export class CrossEncoderReranker implements Reranker {
           const spec = "@huggingface/transformers"
           const t: any = await import(spec as string)
           this.tokenizer = await t.AutoTokenizer.from_pretrained(this.modelId)
-          this.model = await t.AutoModelForSequenceClassification.from_pretrained(this.modelId, { quantized: true })
+          this.model = await t.AutoModelForSequenceClassification.from_pretrained(this.modelId, { quantized: true, ...onnxThreadOptions() })
         } catch {
           this.failed = true // model unavailable (not downloaded / offline) → graceful no-op
         }

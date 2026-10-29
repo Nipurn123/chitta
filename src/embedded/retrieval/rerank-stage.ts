@@ -16,16 +16,31 @@ export async function rerankStage(
   let cutoff = initialCutoff
   let rerankerUsed = false
   if (reranker && merged.length > 1) {
-    const rerankK = Number(process.env.CONTEXT_RERANK_K ?? 20)
-    const cand = merged.slice(0, rerankK)
+    // Candidates = the best-ranked chunk of each of the top CONTEXT_RERANK_K records (default 50).
+    // One per record because the final list keeps one chunk per record first (diversity.ts):
+    // scoring a record's 2nd/3rd chunk spends cross-encoder calls on slots it can't win. On pooled
+    // LongMemEval the blended reranker over 50 candidates added 3.8 points all-gold@10 over no
+    // reranker (66.6% → 70.4%); it costs ~0.5 s/query on a CPU VM - lower K trades accuracy for
+    // latency.
+    const rerankK = Number(process.env.CONTEXT_RERANK_K ?? 50)
+    const cand: FusedResult[] = []
+    const rest: FusedResult[] = []
+    const seen = new Set<string>()
+    for (const c of merged) {
+      const rec = (c.metadata.recordId ?? c.metadata.virtualRecordId) as string | undefined
+      if (cand.length < rerankK && !(rec && seen.has(rec))) {
+        if (rec) seen.add(rec)
+        cand.push(c)
+      } else rest.push(c)
+    }
     const scores = await reranker.rank(query, cand.map((c) => bestPassage(c.content, queryTokens(query)) || c.content))
     if (scores) {
-      // Default: the cross-encoder decides the order outright (highest precision when the
-      // model is confident). BLEND (opt-in): rank-fuse the reranker's order with the existing
-      // RRF order, so a candidate strong in RRF that the cross-encoder MIS-scores isn't fully
-      // demoted out of the top-k - preserves recall@k while keeping most of the ranking gain
-      // (the cross-encoder can hurt recall on out-of-domain/short passages otherwise).
-      if (/^(1|true|on)$/i.test(process.env.CONTEXT_RERANK_BLEND ?? "")) {
+      // Default: BLEND - rank-fuse the reranker's order with the existing RRF order, so a
+      // candidate strong in RRF that the cross-encoder MIS-scores isn't fully demoted out of the
+      // top-k (the cross-encoder can hurt recall on out-of-domain/short passages). Measured best
+      // recall on pooled LongMemEval (70.4% vs 69.6% for pure rerank). CONTEXT_RERANK_BLEND=0
+      // lets the cross-encoder decide the order outright (best MRR when the model is confident).
+      if (!/^(0|false|off)$/i.test(process.env.CONTEXT_RERANK_BLEND ?? "1")) {
         const K = Number(process.env.CONTEXT_RRF_K ?? 60)
         const rerankRank = new Map<number, number>() // candidate index → its position by rerank score
         ;[...cand.keys()].sort((a, b) => scores[b] - scores[a]).forEach((idx, pos) => rerankRank.set(idx, pos))
@@ -34,7 +49,7 @@ export async function rerankStage(
         cand.forEach((c, i) => (c.rrf = scores[i]))
       }
       cand.sort((a, b) => b.rrf - a.rrf)
-      ordered = [...cand, ...merged.slice(rerankK)]
+      ordered = [...cand, ...rest]
       cutoff = -Infinity // reranker decided relevance; keep its order, no rrf cutoff
       rerankerUsed = true
     }

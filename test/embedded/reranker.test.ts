@@ -18,16 +18,22 @@ async function ctxWith(reranker?: Reranker) {
 }
 
 describe("cross-encoder reranker stage", () => {
-  test("an injected reranker reorders results by its scores", async () => {
-    // fake reranker: prefer whichever doc mentions "Visa", regardless of RRF order
+  test("an injected reranker reorders results by its scores (pure mode)", async () => {
+    // fake reranker: prefer whichever doc mentions "Visa", regardless of RRF order. Pure mode
+    // lets it decide outright; the default blend mode is covered in rerank.test.ts.
     const fake: Reranker = {
       async rank(_q, docs) {
         return docs.map((d) => (/visa/i.test(d) ? 100 : 1))
       },
     }
-    const ctx = await ctxWith(fake)
-    const res = await ctx.searchWithGraph("AI partnership", "u", "o")
-    expect(res.searchResults[0].content.toLowerCase()).toContain("visa") // reranker won
+    process.env.CONTEXT_RERANK_BLEND = "0"
+    try {
+      const ctx = await ctxWith(fake)
+      const res = await ctx.searchWithGraph("AI partnership", "u", "o")
+      expect(res.searchResults[0].content.toLowerCase()).toContain("visa") // reranker won
+    } finally {
+      delete process.env.CONTEXT_RERANK_BLEND
+    }
   })
 
   test("an unavailable reranker (null) leaves retrieval working (RRF order)", async () => {

@@ -138,12 +138,13 @@ describe("PPR record retrieval (multi-hop, ACL-fail-closed, hub-robust)", () => 
   })
 
   test("(b) end-to-end: flag ON surfaces the 3-hop record, flag OFF does not", async () => {
-    // 12 fillers overlap the query only in embedding space (char n-grams: "projects"~
-    // "project", "zephyrus"~"zephyr") but share NO literal FTS token with it - they
-    // deterministically crowd the target out of the dense/keyword pool, so the ONLY way
-    // R3 can surface is through a graph signal. Lowercase ⇒ no entities ⇒ no graph legs.
+    // 12 fillers overlap the query only in embedding space (char n-grams: "projectors"~
+    // "project", "zephyrus"~"zephyr") but share NO FTS token with it, even after porter
+    // stemming ("projectors"→"projector", not "project") - they deterministically crowd the
+    // target out of the dense/keyword pool, so the ONLY way R3 can surface is through a graph
+    // signal. Lowercase ⇒ no entities ⇒ no graph legs.
     const fillers: Doc[] = Array.from({ length: 12 }, (_, i) => ({
-      recordId: `f${i}`, text: `zephyrus projects briefing memo ${i} covering quarterly milestones`,
+      recordId: `f${i}`, text: `zephyrus projectors briefing memo ${i} covering quarterly milestones`,
     }))
     const run = async (query: string): Promise<string[]> => {
       const ctx = buildEmbeddedContext({ path: ":memory:" })

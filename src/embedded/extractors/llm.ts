@@ -36,6 +36,42 @@ const INTENT_SYSTEM = [
   'Map first-person ("I","me","my") to subject "user".',
 ].join(" ")
 
+// FACT KEYS: short, self-contained, dated statements, indexed as extra search keys for the record
+// (LongMemEval's "fact-augmented keys": +9.4% recall@k reported). Third person, so a question in
+// the first person ("what did I buy...") meets them in the same register as the record text.
+const FACTS_SYSTEM = [
+  "List the facts this text states. For a conversation, list what it reveals about the USER:",
+  "what they did, bought, own, plan, like or dislike, people and pets in their life, places,",
+  "numbers (prices, counts, durations, ages) and WHEN things happened - resolve relative dates",
+  "('last Tuesday', 'two weeks ago') against the session date when one is given. Include what the",
+  "assistant said only when it is about the user's own situation or a recommendation they took.",
+  "Each fact: one self-contained sentence, under 25 words, starting with 'The user' when it is",
+  "about the user. At most 40 facts. Return ONLY a JSON array of strings.",
+].join(" ")
+
+// QUERY EXPANSION (LLM mode): a question rarely shares words with the memory that answers it -
+// "suggest accessories for my photography setup" is answered by a session about the user's camera.
+// The model names what the answering memory would talk about, as a few short searches.
+const EXPAND_SYSTEM = [
+  "A user asks their memory assistant a QUESTION. Write up to 3 short search queries (under 12",
+  "words each) that would find the PAST conversation(s) holding the answer: name the specific",
+  "things, people, places and events involved. For a request for advice or recommendations, search",
+  "for what the user said about their own situation, gear, tastes or plans. For a question that",
+  "counts or compares several things, one query per thing. Return ONLY a JSON array of strings.",
+].join(" ")
+
+// ROUTER: the rewrite call above, plus what KIND of answer the question needs - the reader widens
+// its search for questions that gather many memories (counting, totals, timelines).
+export const QUESTION_KINDS = ["single", "aggregate", "temporal", "update", "preference"] as const
+export type QuestionKind = (typeof QUESTION_KINDS)[number]
+const ROUTE_SYSTEM = [
+  EXPAND_SYSTEM.replace("Return ONLY a JSON array of strings.", ""),
+  'Also classify the question as "kind": "aggregate" (counts, totals, lists or comparisons across',
+  'several memories), "temporal" (dates, order of events, how long ago / between), "update" (the',
+  'current state of something that may have changed), "preference" (advice or recommendations for',
+  'the user), or "single" (one fact). Return ONLY JSON: {"kind": "...", "queries": ["...", "..."]}',
+].join(" ")
+
 function parseJsonBlock(s: string): any {
   try {
     return JSON.parse(s)
@@ -135,6 +171,51 @@ export class LlmExtractor implements KnowledgeExtractor {
   }
 
   /** Parse a natural-language QUESTION into a graph-query intent (for KGQA). */
+  /** Fact keys for a record (see FACTS_SYSTEM). [] when the model returns nothing usable. */
+  async extractFacts(text: string, occurredAt?: number | string): Promise<string[]> {
+    const when = occurredAt == null || occurredAt === "" ? "" : `SESSION DATE: ${occurredAt}\n\n`
+    const content = await this.chat(FACTS_SYSTEM, `${when}${text}`)
+    if (!content) return []
+    const m = content.match(/\[[\s\S]*\]/) // tolerate code fences / stray text
+    try {
+      const arr = JSON.parse(m ? m[0] : content) as unknown
+      return Array.isArray(arr) ? arr.filter((f): f is string => typeof f === "string" && f.trim().length > 0).slice(0, 40) : []
+    } catch {
+      return []
+    }
+  }
+
+  /** A plain completion with this client's endpoint/model - the memory reader's model call. */
+  complete(system: string, user: string): Promise<string> {
+    return this.chat(system, user)
+  }
+
+  /** The kind of question (drives how widely the reader searches) plus up to 3 search queries,
+   *  in ONE call (see ROUTE_SYSTEM). Falls back to { kind: "single", queries: [] }. */
+  async routeQuestion(question: string): Promise<{ kind: QuestionKind; queries: string[] }> {
+    const content = await this.chat(ROUTE_SYSTEM, question)
+    try {
+      const o = parseJsonBlock(content) as { kind?: string; queries?: unknown }
+      const kind = (QUESTION_KINDS as readonly string[]).includes(o.kind ?? "") ? (o.kind as QuestionKind) : "single"
+      const queries = Array.isArray(o.queries) ? o.queries.filter((q): q is string => typeof q === "string" && q.trim().length > 2).slice(0, 3) : []
+      return { kind, queries }
+    } catch {
+      return { kind: "single", queries: [] }
+    }
+  }
+
+  /** Up to 3 search queries for a question (see EXPAND_SYSTEM). [] when nothing usable. */
+  async expandQuery(question: string): Promise<string[]> {
+    const content = await this.chat(EXPAND_SYSTEM, question)
+    const m = content.match(/\[[\s\S]*\]/)
+    try {
+      const arr = JSON.parse(m ? m[0] : content) as unknown
+      return Array.isArray(arr) ? arr.filter((q): q is string => typeof q === "string" && q.trim().length > 2).slice(0, 3) : []
+    } catch {
+      return []
+    }
+  }
+
   async parseQuestionIntent(question: string): Promise<QuestionIntent | null> {
     const content = await this.chat(INTENT_SYSTEM, question)
     if (!content) return null
