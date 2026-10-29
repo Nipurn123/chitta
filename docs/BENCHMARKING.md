@@ -79,7 +79,7 @@ and the benchmark ingests via the **HybridExtractor** (deterministic + LLM):
 # local / sovereign model (recommended - nothing leaves the box, no per-call cost):
 CONTEXT_LLM_URL=http://localhost:8000 CONTEXT_LLM_MODEL=your-model \
 CONTEXT_EMBEDDINGS=transformers \
-  bun run src/embedded/cli.ts bench locomo --path locomo10.json --tier a --k 10 --rerank
+  bun run src/embedded/cli.ts bench locomo --path locomo10.json --tier a --k 10
 
 # any OpenAI-compatible endpoint also works (a full /chat/completions URL is used verbatim);
 # thinking models need CONTEXT_LLM_MAX_TOKENS >= ~1500 or the answer comes back empty.
@@ -89,11 +89,93 @@ Report **both** numbers - the zero-token default (what ships) and the with-LLM m
 head-to-head) - so the comparison is honest: accuracy *at token cost*. The LLM extraction is
 thousands of calls for a full run, so start with `--limit 1` to sanity-check before a full sweep.
 
+## Pooled LongMemEval (the realistic retrieval test + regression gate)
+
+The standard loader gives each question its own 1-6 evidence sessions, which is easy. `--pooled`
+puts EVERY session in the file into ONE store (940 for `longmemeval_oracle.json`), so each
+question must find its sessions among all of them - like a real memory that has seen
+everything. It runs Chitta next to three baselines that rank Chitta's own chunks with Chitta's
+own embeddings (BM25, dense, BM25+dense RRF), so a gap is ranking logic, not chunking or the
+model, and **exits 1 when Chitta's all-gold@k falls below plain RRF**.
+
+```bash
+chitta bench longmemeval --pooled --path longmemeval_oracle.json --store lme-pooled.db
+# re-query an existing store (skips the ~35 min ingest), save per-question rankings:
+chitta bench longmemeval --pooled --path longmemeval_oracle.json --store lme-pooled.db --reuse --out ranks.jsonl
+```
+
+The store is built with the server's own pipeline (reranker required to load), and the run
+fails if retrieval writes salience, so no question can bias the next. A full store is ~300 MB;
+`tools/lme-pooled/` has scripts for running it on a cloud VM.
+
+**LLM mode.** With `CONTEXT_LLM_URL` set, the run first extracts fact keys for every session
+(16 calls at once, cached in `<store>.facts.json` so a rebuild never pays twice) and passes them
+to ingest; at query time the model also rewrites each question into up to 3 searches. Graph
+extraction stays deterministic unless `CONTEXT_POOLED_LLM_TRIPLES=1` (one more sequential call
+per session). On a GCE VM, `tools/lme-pooled/vertex-proxy.ts` serves Vertex Gemini as a local
+OpenAI-compatible endpoint with self-refreshing tokens:
+
+```bash
+VERTEX_PROJECT=<gcp-project> bun run tools/lme-pooled/vertex-proxy.ts 8790 &
+CONTEXT_LLM_URL=http://127.0.0.1:8790 CONTEXT_LLM_MODEL=google/gemini-3.8-flash CONTEXT_LLM_MAX_TOKENS=4096 \
+  chitta bench longmemeval --pooled --path longmemeval_oracle.json --store lme-llm.db
+```
+
+**End-to-end answers on the pooled store.** `--answer` answers all questions (abstention
+included) with the same LLM from Chitta's top-k and from the RRF baseline's top-k - one chunk per
+record for both - judges them with the per-type rules, prints accuracy per question type, and
+exits 1 unless Chitta's context wins. `--hyps prefix-` writes both hypotheses files.
+
+```bash
+CONTEXT_LLM_URL=... chitta bench longmemeval --pooled --answer --path longmemeval_oracle.json --store lme-llm.db --hyps hyps-
+```
+
+Add `--reader` to answer through Chitta's memory reader (`ctx.answerQuestion`: route, search,
+gather dated evidence, notes-then-answer) instead of one chunk per session. Each question is routed
+once and read twice by the identical reader with the identical breadth - over Chitta's sessions
+and over the RRF baseline's - so only which sessions are read differs. `--reader-model` picks the
+reading model (routing and judging stay on `CONTEXT_LLM_MODEL`); `--concurrency` sets questions in
+flight (default 8).
+
+**The official shape (`longmemeval_s` / `_m`).** Every question has its own ~50-session history, so
+each gets a fresh store. `--per-question` ingests a question's history, answers with the memory
+reader and judges it, writing one JSON line per question; it resumes past questions already in
+`--out`. Embedding dominates ingest (~1 s per session on CPU), so shard it across processes and save
+the stores to reuse them (`--store-dir`; `--ingest-only` builds them without any model call). Cap
+each process's ONNX threads with `CONTEXT_EMBED_THREADS` when running many side by side.
+
+```bash
+# build all stores once (CPU only), e.g. 28 processes x 2 threads on 56 cores
+for i in $(seq 0 27); do CONTEXT_EMBED_THREADS=2 chitta bench longmemeval --per-question --ingest-only \
+  --path longmemeval_s_cleaned.json --shard $i/28 --out rows-$i.jsonl --store-dir stores & done; wait
+# answer + judge (reader model separate from the router/judge model), then table the shards
+for i in $(seq 0 15); do CONTEXT_LLM_URL=... chitta bench longmemeval --per-question --path longmemeval_s_cleaned.json \
+  --shard $i/16 --out run/rows-$i.jsonl --store-dir stores --reader-model <model> & done; wait
+chitta bench longmemeval --merge $(ls run/rows-*.jsonl | paste -sd, -)
+```
+
+`tools/lme-pooled/p3-s.sh` wraps both steps for a VM.
+
+## Publishable LongMemEval accuracy (Tier B)
+
+The reader is given each question's date (`question_date`), and the judge applies LongMemEval's
+per-type grading rules (off-by-one tolerance for temporal counts, updated-answer rule for
+knowledge updates, rubric for preferences, judge-graded abstention). For a number comparable to
+published ones, also score the answers with LongMemEval's official script and GPT-4o:
+
+```bash
+chitta bench longmemeval --path longmemeval_s.json --tier both --hyps hyps.jsonl
+cd LongMemEval/src/evaluation && python3 evaluate_qa.py gpt-4o /path/to/hyps.jsonl /path/to/longmemeval_s.json
+```
+
 ## Fairness (so the number means something)
 
 1. **Turn on the real pipeline.** The hash embedder + deterministic extractor will score low and
    unfairly. Set `CONTEXT_EMBEDDINGS=real`, and - to compare against systems that build memory
    with an LLM (Zep, Mem0) - set `CONTEXT_LLM_URL` so Chitta uses the LLM extractor at ingest too.
+   `chitta bench` builds exactly what the MCP server builds, cross-encoder reranker included (on
+   by default; `--no-rerank` to measure without it). If the reranker can't load, the run fails
+   rather than silently benchmarking a pipeline without it.
 2. **Same answer LLM everywhere.** When comparing systems, use the *identical* answer + judge model;
    otherwise you're benchmarking the LLM, not the memory.
 3. **Report the config.** Every scorecard header carries `embedder / k / model` - a benchmark
@@ -115,6 +197,9 @@ src/eval/
     ingest.ts                ingest a case's history into a fresh memory
     retrieval.ts             Tier A - retrieval scoring (reuses metrics.ts)
     qa.ts / llm.ts           Tier B - LLM answer + LLM-as-judge (grounded, abstention-aware)
+    pooled.ts                pooled LongMemEval: one store, Chitta vs BM25/dense/RRF, the gate
+    pooled-qa.ts             end-to-end answers on the pooled store (plain context or the reader)
+    per-question.ts          the official shape: a store per question, sharded, resumable
     scorecard.ts             aggregate per-category + render (console / markdown / json)
     run.ts                   orchestrator (Tier B injected, so Tier A needs no LLM)
 ```

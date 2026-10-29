@@ -7,11 +7,15 @@
 One SQLite file that remembers everything your agent learns - across sessions, forever -
 and grows it into a living knowledge graph. Fully local. ~100 ms recall. $0 per query.
 
+**LongMemEval-S: 85.8%** end-to-end with the optional memory reader (Gemini 3.1 Pro) ·
+**73.0%** pooled retrieval with **zero LLM tokens** · [how it's measured ↓](#benchmarks--performance)
+
 <p>
   <a href="https://www.npmjs.com/package/@100xprompt/chitta"><img src="https://img.shields.io/npm/v/@100xprompt/chitta?color=cb3837&logo=npm" alt="npm"/></a>
   <a href="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml"><img src="https://github.com/Nipurn123/chitta/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/>
-  <img src="https://img.shields.io/badge/tests-395%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/tests-452%20passing-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/LongMemEval--S-85.8%25-blueviolet" alt="LongMemEval-S 85.8%"/>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun"/>
   <img src="https://img.shields.io/badge/protocol-MCP-blue" alt="MCP"/>
 </p>
@@ -267,7 +271,13 @@ The honest, fully-sourced version (every competitor claim linked) is in
 
 <sub>⚠️ = partial, or a different mechanism (e.g. per-user graph *isolation* rather than filtered visibility on one shared graph). Full nuance + sources: [comparison.md](docs/launch/comparison.md).</sub>
 
-**On accuracy benchmarks:** everyone measures differently - competitors publish *with-LLM* QA accuracy (an LLM reads the memory and answers the question), while Chitta's **0.552 on LoCoMo** is a **zero-token recall** number. Different scale - and the competitors' figures are themselves publicly disputed. We don't claim to "beat" anyone on a contested metric; we do the job at **zero tokens**. See [the full comparison](docs/launch/comparison.md).
+**On accuracy benchmarks:** everyone measures differently, so read the setup before the number.
+Chitta now publishes both kinds: **zero-token retrieval** (no LLM anywhere) and **end-to-end answer
+accuracy** with its optional memory reader. On LongMemEval-S end to end, Chitta scores **85.8%** with
+Gemini 3.1 Pro reading - in line with Supermemory's own Gemini-3-Pro-reader run (**85.2%**) and above
+Zep (**71.2%**, as measured by Supermemory). Supermemory's GPT-4o headline is higher (97%), and our
+answers were graded by Gemini 3.8 Flash rather than GPT-4o, so this is a like-for-like reader
+comparison, not a leaderboard claim. See [the full comparison](docs/launch/comparison.md).
 
 ## Install
 
@@ -460,16 +470,42 @@ Read pragmas (256 MB page cache, mmap on plaintext, WAL) keep steady-state queri
 
 All numbers **measured this release** on a dev laptop (hash embedder unless noted; ratios, not SLAs). Full detail + caveats in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
+### End-to-end answers - LongMemEval-S, the standard long-memory benchmark
+
+500 questions, each with its own ~50-session (~115k-token) history in a fresh store; Chitta's memory
+reader (`ctx.answerQuestion`) with **Gemini 3.1 Pro** reading, graded by Gemini 3.8 Flash with
+LongMemEval's per-question-type rules.
+
+| Question type | Chitta | Supermemory (Gemini 3 Pro reader)¹ | Zep¹ |
+|---|--:|--:|--:|
+| Single-session (user) | 92.2% | 98.6% | 92.9% |
+| Single-session (assistant) | **98.2%** | 98.2% | 80.4% |
+| Preference | **83.3%** | 70.0% | 56.7% |
+| Knowledge update | **93.1%** | 89.7% | 83.3% |
+| Temporal reasoning | 81.9% | 82.0% | 62.4% |
+| Multi-session | 75.2% | 76.7% | 57.9% |
+| Abstention | 93.3% | - | - |
+| **Overall** | **85.8%** | 85.2% | 71.2% |
+
+<sub>¹ As published on [Supermemory's LongMemEval page](https://supermemory.ai/research/longmembench/) (Zep measured by Supermemory with a GPT-4o reader). Their judge is GPT-4o; ours is Gemini 3.8 Flash, so treat small gaps as noise. Reproduce: [docs/BENCHMARKING.md](docs/BENCHMARKING.md#publishable-longmemeval-accuracy-tier-b).</sub>
+
 ### Retrieval quality - at **zero LLM tokens**
 
 | Benchmark | Metric | Chitta | Notes |
 |---|---|--:|---|
-| **LongMemEval** | recall@10 (Tier-A) | **0.782** | session-level evidence |
-| **LoCoMo** | recall@10 (Tier-A) | **0.552** | 1,986 Q · `bge-small` · rerank + wide pool (default) |
-| **LoCoMo** | nDCG@10 / MRR | 0.422 / 0.408 | single-hop **0.66** · multi-hop 0.29 |
-| **LoCoMo** | context reduction | **143×** | 181 vs 25,864 tokens/question |
+| **LongMemEval (pooled)** | all evidence in top 10 | **73.0%** | all 940 sessions in **one** store, 470 Q - harder than per-question; plain BM25+dense RRF on the same chunks: 67.9% |
+| **LongMemEval (pooled)** | recall@10 / MRR | **0.816** / 0.701 | p50 **269 ms** with the cross-encoder, CPU |
+| **LongMemEval (pooled), LLM mode** | all evidence in top 10 | **81.7%** | + Gemini fact keys at ingest and query rewriting (opt-in) |
+| **LoCoMo** | recall@10 / MRR | **0.624** / 0.440 | 1,540 Q · `bge-small` · rerank (default) |
+| **LoCoMo** | context reduction | **143×** | 181 vs 25,864 tokens/question (measured on 0.7) |
 
-Retrieval is fully **LLM-free** and hands the reader **~180 tokens instead of 25,864** (143× less). Competitors post 90%+ on *end-to-end QA* (an LLM reads the memory and answers) - e.g. Mem0 at **~6,900 tokens/query**; Chitta spends **0**. Compare accuracy *at token cost*. LoCoMo/LongMemEval are casual conversation, where zero-token typed extraction is naturally starved; for the head-to-head number, **benchmark mode** (`CONTEXT_LLM_URL=…`) ingests via an LLM extractor like the competitors - see [docs/BENCHMARKING.md](docs/BENCHMARKING.md).
+Retrieval is fully **LLM-free** by default: no model call to store or recall. The end-to-end number
+above adds an LLM only to *read* what Chitta retrieved - opt-in with `CONTEXT_LLM_URL`. What moved the
+numbers this release (each change measured on its own): retrieval no longer boosts its own results,
+10 distinct sessions per answer, conversation-aware chunks with dates, time-aware search ("a week
+ago", "last month"), compound questions split into sub-queries, and a reader that keeps passing
+remarks ("by the way, my old name was…"). Details: [CHANGELOG](CHANGELOG.md) ·
+[docs/BENCHMARKING.md](docs/BENCHMARKING.md).
 
 ### Graph retrieval - **O(1) in graph size**
 

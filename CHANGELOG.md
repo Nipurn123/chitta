@@ -4,9 +4,94 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 semantic versioning once it reaches 1.0.
 
-## [Unreleased]
+## [0.8.0] - 2026-10-29
 
-_Nothing yet._
+Retrieval quality on long chat histories, measured on a pooled LongMemEval test (all 940
+evidence sessions in one store) and LoCoMo: pooled all-gold@10 59.1% -> 70.0% (plain BM25+dense
+RRF over the same chunks: 67.7%), LoCoMo recall@10 0.552 -> 0.624. Details and per-change numbers:
+`docs/plans/longmemeval-top-tier.md`.
+
+### Changed
+- **Retrieval is read-only.** A search no longer counts as a "use" of what it returned - that made
+  every query boost its own results and bias the next (-7.9 points). Uses now come from
+  `markUsed()` (ACL-scoped); `chitta ask` records the sources its answer cites. The access boost
+  is capped at x1.15 (`CONTEXT_DECAY_ACCESS_CAP`).
+- **Write-time importance no longer moves the ranking by default** (`CONTEXT_IMPORTANCE_W=0`; `1`
+  restores the old behaviour). Its cue words fire at random on chat and out-ranked relevance.
+  Importance is still stored and used by `sleep` and the memory layer.
+- **Results hold K distinct records first**; a record's further chunks only backfill. The
+  candidate pool per signal is now `max(400, 8 x topk)` chunks.
+- **Reranker defaults:** 50 candidates (`CONTEXT_RERANK_K`), one per record, blended with the
+  fused order (`CONTEXT_RERANK_BLEND=0` for the cross-encoder's order alone).
+- **Keyword search stems (porter) and drops stopwords.** Existing stores rebuild their keyword
+  index once on first open (seconds for ~50k chunks).
+- **Recency decay counts whole days**, so records stored minutes apart keep exact score ties.
+- The MCP server's embedder selection now matches the library default: `CONTEXT_EMBEDDINGS=real`
+  and `CONTEXT_EMBED_PROFILE` were ignored before.
+
+### Added
+- `chitta bench longmemeval --pooled` - every session in one store, Chitta vs BM25 / dense / RRF
+  baselines over the same chunks; exits 1 when Chitta loses to RRF.
+- `chitta bench` builds exactly what the server builds; the reranker is on by default
+  (`--no-rerank` to opt out) and the run fails if it can't load.
+- LongMemEval Tier B: the reader gets each question's date, the judge applies LongMemEval's
+  per-type grading rules, and `--hyps` writes answers for the official `evaluate_qa.py`.
+- `CONTEXT_GRAPH=0` turns off the 1-hop graph leg (measured neutral on both chat benchmarks).
+
+### Phase 2 (same release): conversations, time, facts
+
+Pooled LongMemEval all-gold@10: zero-LLM 70.0% -> 73.0% (p50 328 -> 276 ms with the reranker);
+LLM mode (Gemini fact keys + query rewriting) 81.7% (82.3% in an earlier run; Gemini output varies).
+LoCoMo recall@10 0.624, MRR 0.440 (unchanged or better).
+
+- **Conversation-aware chunking.** Transcripts ("user: / assistant:", "Alice: / Bob:") are chunked by
+  round - a turn and its replies - instead of on every blank line: 53k fragments became 16k
+  self-contained chunks on LongMemEval (multi-session all-gold@10 47.1% -> 53.7%). Existing stores
+  keep their chunks until a record is re-ingested.
+- **`occurredAt` on ingest** (`occurred_at` on `context_ingest`, `occurredAt` in `remember()`): every
+  chunk of the record carries a `[date]` header, and returned passages keep it.
+- **Time-aware retrieval.** "a week ago", "last month", "in March", "most recently" are read against
+  the question's "now" and lift records whose date fits (a boost, never a filter; `CONTEXT_TIME=0`).
+  `searchWithGraph(..., { now })` sets "now" (default: the current time).
+- **Compound questions** ("which came first, A or B?", two quoted titles) search each part and fuse
+  (`CONTEXT_SUBQUERIES=0`). A single quoted title is not split.
+- **Fact keys.** `facts` on `context_ingest` / `remember()` - short self-contained facts the calling
+  model already knows - become extra search keys of the record (same ACL). With `CONTEXT_LLM_URL`
+  set and no facts given, Chitta extracts them itself (`CONTEXT_LLM_FACTS=0` to skip).
+- **LLM query rewriting** (LLM mode only): the model turns each question into up to 3 searches that
+  name what the answering memory is about (`CONTEXT_LLM_EXPAND=0`). Worth 3.8 points; costs one model
+  call per search.
+- **Batched embedding at ingest** (one model call per 16 chunks; vectors bit-identical).
+- `chitta bench longmemeval --pooled --answer` - end-to-end accuracy on the pooled store, Chitta's
+  context vs the RRF baseline's, same reader and judge. `tools/lme-pooled/vertex-proxy.ts` serves
+  Vertex Gemini as a local OpenAI-compatible endpoint for benchmark VMs.
+- Measured and not adopted: BGE's query instruction (-0.9) and CLS pooling (no gain, and -0.008
+  LoCoMo recall).
+
+### Phase 3 (same release): the memory reader
+
+End-to-end answer accuracy on the official `longmemeval_s` set (500 questions, one store per
+question): **85.8%** with Gemini 3.1 Pro reading (judged by Gemini 3.8 Flash with LongMemEval's
+per-type rules - not GPT-4o, so not leaderboard-comparable). By type: single-session-assistant
+98.2%, abstention 93.3%, knowledge-update 93.1%, single-session-user 92.2%, preference 83.3%,
+temporal 81.9%, multi-session 75.2%.
+
+- **`ctx.answerQuestion(question, userId, orgId)`** (LLM mode) - route (one call: question kind +
+  search rewrites), search (10 sessions, 30 for counting/timeline questions), gather (per session its
+  facts, the chunks the search returned and its best rounds, dated, in date order), then a
+  notes-then-answer prompt with rules for counting, dates, changed facts, recommendations and "not in
+  memory". Options: `CONTEXT_READER_K`, `CONTEXT_READER_K_WIDE`, `CONTEXT_READER_FULL`,
+  `CONTEXT_READER_ROUNDS`, `CONTEXT_READER_CHARS`, `CONTEXT_READER_LEX_W`.
+- Rounds inside a session are ranked by meaning **plus the question's own words** - a fact said in
+  passing ("by the way, my old name was Johnson") inside a turn about something else ranked 9th of 18
+  by meaning alone. On 68 official questions: 76.5% -> 85.3%.
+- `searchWithGraph(..., { expansions })` accepts precomputed search rewrites.
+- `CONTEXT_EMBED_THREADS` caps ONNX threads per process (embedder + reranker), for running many
+  Chitta processes side by side.
+- Benchmarks: `bench longmemeval --pooled --answer --reader [--reader-model m]` and the official
+  shape, `bench longmemeval --per-question --shard i/N --out f [--store-dir d] [--ingest-only]` plus
+  `--merge`. A failed model call is never scored: the judge throws on a reply with no verdict, and
+  `--per-question` writes no row for an empty answer, so a resumed run answers it again.
 
 ## [0.7.4] - 2026-07-13
 

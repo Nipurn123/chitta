@@ -193,6 +193,8 @@ Everything is optional - a bare `remember(text)` works.
 | `shareWithOrg` | `boolean` | `true` ⇒ make it visible org-wide (within the author's org). |
 | `episodes` | `Array<{ event: string; occurredAt?: number \| string; actors?: string[] }>` | Time-anchored experiences → **episodic** memory. |
 | `procedures` | `Array<{ trigger?: string; action: string }>` | Learned how-tos / preferences → **procedural** memory (supersedes on change). |
+| `facts` | `string[]` | Short self-contained facts the text states ("The user adopted a beagle named Max") - each becomes an extra, ACL-scoped search key for this memory. |
+| `occurredAt` | `number \| string` | When the content happened (e.g. the conversation's date). Dates every passage and lets "last week" / "a month ago" questions find it. |
 
 ### `Recalled` - returned by `recall`
 
@@ -323,6 +325,30 @@ const memory = new Chitta({
 procedural recall, reflection (`reflect`), sleep-time consolidation (`sleep`), KGQA (`ask`), entity
 dedupe (`dedupeEntities`), reindex, `factsAsOf`, and more. Use it when the SDK surface doesn't cover
 an advanced need; the SDK methods are thin, typed wrappers over it.
+
+### `ctx.answerQuestion(question, userId, orgId, opts?)` - the memory reader (LLM mode)
+
+Answers a question end to end from the user's memory, in four steps:
+
+1. **Route** - one model call classifies the question (`single`, `aggregate`, `temporal`, `update`,
+   `preference`) and writes up to 3 search rewrites.
+2. **Search** - `searchWithGraph` with those rewrites; 10 sessions, or 30 for `aggregate` /
+   `temporal` questions (`CONTEXT_READER_K`, `CONTEXT_READER_K_WIDE`).
+3. **Gather** - per session: its fact keys, the chunks the search returned, and its best-matching
+   rounds (by meaning plus the question's own words), dated, sessions in date order, under a size
+   budget (`CONTEXT_READER_CHARS`, default 64k characters). For wide questions, sessions past the
+   first 10 contribute facts only (`CONTEXT_READER_FULL`).
+4. **Read** - a notes-then-answer prompt with rules for counting, dates, changed facts, personalised
+   recommendations and "not in memory".
+
+```ts
+const r = await memory.ctx.answerQuestion("How many camera lenses have I bought?", userId, orgId, { now: "2024-06-01" })
+// { answer, notes, kind, recordIds, contextChars }
+```
+
+Uses the configured LLM (`CONTEXT_LLM_URL`) unless `opts.model` passes a different reader (any object
+with `complete(system, user)` and, optionally, `routeQuestion(question)`). `opts.now` is the question's
+"today" (ms or a date string). Throws when no LLM is available.
 
 ---
 
