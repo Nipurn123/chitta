@@ -41,20 +41,26 @@ export interface RekeyResult {
 export async function rekeyDatabase(path: string, oldKey: string, newKey: string): Promise<RekeyResult> {
   if (!fs.existsSync(path)) throw new Error(`no database at ${path}`)
   const prevEnv = process.env.CONTEXT_DB_KEY
-
-  // Open the source under the old key and read every source-of-truth row.
-  process.env.CONTEXT_DB_KEY = oldKey
-  const src = new SqliteStore(path)
+  // Restore by DELETING when it was unset: assigning `undefined` stores the string "undefined" in
+  // Node and Bun >= 1.4 - a non-empty key, so the next store open would try to decrypt.
+  const restoreEnv = () => {
+    if (prevEnv === undefined) delete process.env.CONTEXT_DB_KEY
+    else process.env.CONTEXT_DB_KEY = prevEnv
+  }
 
   const tmp = `${path}.rekey-${Date.now()}.tmp`
-  for (const f of [tmp, `${tmp}-wal`, `${tmp}-shm`]) try { fs.unlinkSync(f) } catch {}
-
-  // Open the destination under the new key (fresh, migrated schema).
-  process.env.CONTEXT_DB_KEY = newKey
-  const dst = new SqliteStore(tmp)
-
+  let src: SqliteStore | undefined
+  let dst: SqliteStore | undefined
   let counts: RekeyResult
   try {
+    // Open the source under the old key and read every source-of-truth row.
+    process.env.CONTEXT_DB_KEY = oldKey
+    src = new SqliteStore(path)
+    for (const f of [tmp, `${tmp}-wal`, `${tmp}-shm`]) try { fs.unlinkSync(f) } catch {}
+    // Open the destination under the new key (fresh, migrated schema).
+    process.env.CONTEXT_DB_KEY = newKey
+    dst = new SqliteStore(tmp)
+
     const records = copyTable(src, dst, "nodes", true)
     const edges = copyTable(src, dst, "edges", true)
     const memories = copyTable(src, dst, "memories", true)
@@ -66,9 +72,9 @@ export async function rekeyDatabase(path: string, oldKey: string, newKey: string
     for (const c of chunkRows) dst.addChunk(c.point_id, c.virtual_record_id, c.org_id, c.content, Array.from(decodeF32(c.embedding)))
     counts = { records, edges, chunks: chunkRows.length, memories, audit, backup: "" }
   } finally {
-    src.close()
-    dst.close()
-    process.env.CONTEXT_DB_KEY = prevEnv // restore caller's env
+    src?.close()
+    dst?.close()
+    restoreEnv() // the caller's env, on every path
   }
 
   // Atomic swap: back up the original, move the re-encrypted file into place.

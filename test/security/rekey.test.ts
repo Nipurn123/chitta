@@ -41,6 +41,9 @@ describe("key rotation", () => {
     const path = join(dir, "store.db")
     await seed(path)
     const r = await rekeyDatabase(path, "", "") // plaintext → plaintext (exercises copy/swap)
+    // an unset key stays unset - not the string "undefined" (Node / Bun >= 1.4 semantics), which
+    // would make the reopen below try to decrypt a plaintext file
+    expect(process.env.CONTEXT_DB_KEY).toBeUndefined()
     expect(r.records).toBeGreaterThan(0)
     expect(r.memories).toBeGreaterThan(0)
     expect(r.chunks).toBeGreaterThan(0)
